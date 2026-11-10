@@ -1,3 +1,4 @@
+import 'paywall_screen.dart';
 import 'dart:convert';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
@@ -115,13 +116,80 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
               ),
             ],
           ),
-          body: IndexedStack(
-            index: _currentIndex,
+          body: Column(
             children: [
-              _buildSolarDomeTab(pos, arcPoints, store, sensor),
-              _buildShadowAndPvTab(pos, store),
-              _buildSavedStudiesTab(store),
-              _buildSettingsTab(store),
+              if (!store.isPro)
+                InkWell(
+                  onTap: () {
+                    Navigator.of(context).push(
+                      MaterialPageRoute(builder: (_) => const PaywallScreen()),
+                    );
+                  },
+                  child: Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: store.isTrialExpired
+                          ? Colors.redAccent.withValues(alpha: 0.15)
+                          : AppTheme.primary.withValues(alpha: 0.15),
+                      border: Border(
+                        bottom: BorderSide(
+                          color: store.isTrialExpired
+                              ? Colors.redAccent.withValues(alpha: 0.4)
+                              : AppTheme.primary.withValues(alpha: 0.4),
+                        ),
+                      ),
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(
+                          store.isTrialExpired ? Icons.lock_clock_rounded : Icons.timer_outlined,
+                          size: 16,
+                          color: store.isTrialExpired ? Colors.redAccent : AppTheme.primary,
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            store.isTrialExpired
+                                ? 'Prueba gratuita de 7 días finalizada • Toca para desbloquear PRO'
+                                : 'Prueba de 7 días activa: ${store.trialDaysRemaining} días restantes • Acceso Total',
+                            style: TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w700,
+                              color: store.isTrialExpired ? Colors.redAccent : AppTheme.primary,
+                            ),
+                          ),
+                        ),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                          decoration: BoxDecoration(
+                            color: store.isTrialExpired ? Colors.redAccent : AppTheme.primary,
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: Text(
+                            store.isTrialExpired ? 'DESBLOQUEAR' : 'PRO',
+                            style: const TextStyle(
+                              fontSize: 10,
+                              fontWeight: FontWeight.w900,
+                              color: Colors.black,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              Expanded(
+                child: IndexedStack(
+                  index: _currentIndex,
+                  children: [
+                    _buildSolarDomeTab(pos, arcPoints, store, sensor),
+                    _buildShadowAndPvTab(pos, store),
+                    _buildSavedStudiesTab(store),
+                    _buildSettingsTab(store),
+                  ],
+                ),
+              ),
             ],
           ),
           bottomNavigationBar: NavigationBar(
@@ -547,6 +615,13 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
 
   Future<void> _openSignAndShareModal(
       SolarStudyRecord study, StorageService store) async {
+    if (store.isTrialExpired) {
+      final unlocked = await Navigator.of(context).push<bool>(
+        MaterialPageRoute(builder: (_) => const PaywallScreen()),
+      );
+      if (!mounted) return;
+      if (unlocked != true && !store.isPro) return;
+    }
     final sigController = SignatureController(
       penStrokeWidth: 3,
       penColor: Colors.black,

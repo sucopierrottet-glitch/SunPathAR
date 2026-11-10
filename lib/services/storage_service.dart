@@ -85,6 +85,8 @@ class StorageService extends ChangeNotifier {
   static const String _keyLon = 'sunpath_lon';
   static const String _keyInspector = 'sunpath_inspector';
   static const String _keyStudies = 'sunpath_studies_v1';
+  static const String _keyFirstInstallDate = 'sunpath_first_install_date';
+  static const String _keyIsPro = 'sunpath_is_pro_active';
 
   SharedPreferences? _prefs;
   String _localeCode = 'es';
@@ -92,6 +94,8 @@ class StorageService extends ChangeNotifier {
   double _longitude = -3.7038;
   String _inspectorName = 'Ing. Solar / Evaluador Pro';
   List<SolarStudyRecord> _studies = [];
+  bool _isPro = false;
+  DateTime? _firstInstallDate;
 
   String get localeCode => _localeCode;
   AppStrings get strings => AppStrings.get(_localeCode);
@@ -99,6 +103,21 @@ class StorageService extends ChangeNotifier {
   double get longitude => _longitude;
   String get inspectorName => _inspectorName;
   List<SolarStudyRecord> get studies => List.unmodifiable(_studies);
+  bool get isPro => _isPro;
+  DateTime get firstInstallDate => _firstInstallDate ?? DateTime.now();
+
+  /// 7-day Free Trial status
+  int get trialDaysRemaining {
+    if (_isPro) return 999;
+    final start = _firstInstallDate ?? DateTime.now();
+    final elapsedDays = DateTime.now().difference(start).inDays;
+    final remaining = 7 - elapsedDays;
+    return remaining < 0 ? 0 : remaining;
+  }
+
+  bool get isTrialActive => !_isPro && trialDaysRemaining > 0;
+  bool get isTrialExpired => !_isPro && trialDaysRemaining <= 0;
+  bool get hasFullAccess => _isPro || isTrialActive;
 
   Future<void> init() async {
     _prefs = await SharedPreferences.getInstance();
@@ -107,6 +126,14 @@ class StorageService extends ChangeNotifier {
     _longitude = _prefs?.getDouble(_keyLon) ?? -3.7038;
     _inspectorName =
         _prefs?.getString(_keyInspector) ?? 'Ing. Solar / Evaluador Pro';
+    _isPro = _prefs?.getBool(_keyIsPro) ?? false;
+    final installMillis = _prefs?.getInt(_keyFirstInstallDate);
+    if (installMillis == null) {
+      _firstInstallDate = DateTime.now();
+      await _prefs?.setInt(_keyFirstInstallDate, _firstInstallDate!.millisecondsSinceEpoch);
+    } else {
+      _firstInstallDate = DateTime.fromMillisecondsSinceEpoch(installMillis);
+    }
 
     final rawStudies = _prefs?.getString(_keyStudies);
     if (rawStudies != null && rawStudies.isNotEmpty) {
@@ -190,6 +217,12 @@ class StorageService extends ChangeNotifier {
   Future<void> deleteStudy(String id) async {
     _studies.removeWhere((e) => e.id == id);
     await _persistStudies();
+    notifyListeners();
+  }
+
+  Future<void> setProStatus(bool pro) async {
+    _isPro = pro;
+    await _prefs?.setBool(_keyIsPro, pro);
     notifyListeners();
   }
 

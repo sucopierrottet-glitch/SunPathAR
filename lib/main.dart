@@ -4,9 +4,12 @@ import 'screens/welcome_landing_screen.dart';
 import 'services/storage_service.dart';
 import 'theme/app_theme.dart';
 
+import 'services/billing_service.dart';
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await StorageService.instance.init();
+  await BillingService.instance.init();
   runApp(const SunPathArApp());
 }
 

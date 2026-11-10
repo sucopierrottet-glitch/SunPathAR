@@ -82,6 +82,35 @@ class WelcomeLandingScreen extends StatelessWidget {
                       fontWeight: FontWeight.w500,
                     ),
                   ),
+                  const SizedBox(height: 14),
+                  Center(
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: AppTheme.primary.withValues(alpha: 0.15),
+                        borderRadius: BorderRadius.circular(20),
+                        border: Border.all(color: AppTheme.primary.withValues(alpha: 0.4)),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.stars_rounded, color: AppTheme.primary, size: 16),
+                          const SizedBox(width: 6),
+                          Text(
+                            StorageService.instance.isPro
+                                ? 'MODO PRO ACTIVO'
+                                : '7 DÍAS DE PRUEBA GRATUITA • TODAS LAS FUNCIONES',
+                            style: const TextStyle(
+                              color: AppTheme.primary,
+                              fontSize: 11,
+                              fontWeight: FontWeight.w800,
+                              letterSpacing: 0.5,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
                   const Spacer(flex: 3),
                   ElevatedButton.icon(
                     key: const Key('btnWelcomeEnter'),
