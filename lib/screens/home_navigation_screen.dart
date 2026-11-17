@@ -255,11 +255,40 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
                 currentPos: pos,
                 dailyArc: arc,
                 compassHeading: sensor.compassAzimuth,
+                isLive: sensor.useLiveSensors,
               ),
               child: const SizedBox.expand(),
             ),
           ),
           const SizedBox(height: 14),
+
+          // Live Sensor Status Banner
+          if (sensor.useLiveSensors)
+            Container(
+              margin: const EdgeInsets.only(bottom: 12),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+              decoration: BoxDecoration(
+                color: const Color(0xFF0F231D),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: AppTheme.success.withValues(alpha: 0.4)),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.compass_calibration_rounded, color: AppTheme.success, size: 18),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Brújula en vivo: ' + sensor.compassAzimuth.toStringAsFixed(0) + '° (' + _getCardinalLabel(sensor.compassAzimuth) + ') • Inclinación: ' + sensor.devicePitch.toStringAsFixed(0) + '°',
+                      style: const TextStyle(
+                        color: AppTheme.success,
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
 
           // Live Elevation & Azimuth KPI Row
           Row(
@@ -909,6 +938,17 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
     );
   }
 
+  String _getCardinalLabel(double az) {
+    if (az >= 337.5 || az < 22.5) return 'Norte';
+    if (az >= 22.5 && az < 67.5) return 'Noreste';
+    if (az >= 67.5 && az < 112.5) return 'Este';
+    if (az >= 112.5 && az < 157.5) return 'Sureste';
+    if (az >= 157.5 && az < 202.5) return 'Sur';
+    if (az >= 202.5 && az < 247.5) return 'Suroeste';
+    if (az >= 247.5 && az < 292.5) return 'Oeste';
+    return 'Noroeste';
+  }
+
   Widget _metricCard(
       String title, String value, Color accent, IconData icon) {
     return Container(
@@ -989,26 +1029,38 @@ class _SolarSkyDomePainter extends CustomPainter {
   final SolarPositionResult currentPos;
   final List<SolarPositionResult> dailyArc;
   final double compassHeading;
+  final bool isLive;
 
   _SolarSkyDomePainter({
     required this.currentPos,
     required this.dailyArc,
     required this.compassHeading,
+    required this.isLive,
   });
 
   @override
   void paint(Canvas canvas, Size size) {
     final cx = size.width / 2;
     final cy = size.height / 2;
-    final maxR = math.min(cx, cy) - 18;
+    final maxR = math.min(cx, cy) - 22;
+
+    // Background Sky Gradient
+    final bgPaint = Paint()
+      ..shader = RadialGradient(
+        colors: [
+          const Color(0xFF16233B),
+          const Color(0xFF0B111E),
+        ],
+      ).createShader(Rect.fromCircle(center: Offset(cx, cy), radius: maxR));
+    canvas.drawCircle(Offset(cx, cy), maxR, bgPaint);
 
     // Outer Horizon Compass Circle
     final ringPaint = Paint()
-      ..color = const Color(0xFF243046)
+      ..color = const Color(0xFF2A3A54)
       ..style = PaintingStyle.stroke
       ..strokeWidth = 2;
     canvas.drawCircle(Offset(cx, cy), maxR, ringPaint);
-    canvas.drawCircle(Offset(cx, cy), maxR * 0.66, ringPaint..strokeWidth = 1);
+    canvas.drawCircle(Offset(cx, cy), maxR * 0.66, ringPaint..strokeWidth = 1..color = const Color(0xFF1E293B));
     canvas.drawCircle(Offset(cx, cy), maxR * 0.33, ringPaint);
 
     // Crosshairs
@@ -1017,12 +1069,20 @@ class _SolarSkyDomePainter extends CustomPainter {
     canvas.drawLine(
         Offset(cx, cy - maxR), Offset(cx, cy + maxR), ringPaint);
 
+    // Cardinal Points (N, S, E, W) rotated by device compass heading
+    final rotationRad = isLive ? (-compassHeading * math.pi / 180.0) : 0.0;
+
+    _drawCardinal(canvas, cx, cy, maxR, rotationRad, 0, 'N', Colors.redAccent, isBold: true);
+    _drawCardinal(canvas, cx, cy, maxR, rotationRad, 90, 'E', AppTheme.textSecondary);
+    _drawCardinal(canvas, cx, cy, maxR, rotationRad, 180, 'S', AppTheme.textSecondary);
+    _drawCardinal(canvas, cx, cy, maxR, rotationRad, 270, 'W', AppTheme.textSecondary);
+
     // Draw Daily Solar Trajectory Path
     final path = Path();
     bool started = false;
     for (final pt in dailyArc) {
       if (pt.elevationDeg >= 0) {
-        final offset = _polarToScreen(cx, cy, maxR, pt.azimuthDeg, pt.elevationDeg);
+        final offset = _polarToScreen(cx, cy, maxR, pt.azimuthDeg, pt.elevationDeg, rotationRad);
         if (!started) {
           path.moveTo(offset.dx, offset.dy);
           started = true;
@@ -1041,25 +1101,58 @@ class _SolarSkyDomePainter extends CustomPainter {
     // Draw Current Sun Position
     final sunElev = currentPos.elevationDeg.clamp(0.0, 90.0);
     final sunPos =
-        _polarToScreen(cx, cy, maxR, currentPos.azimuthDeg, sunElev);
+        _polarToScreen(cx, cy, maxR, currentPos.azimuthDeg, sunElev, rotationRad);
 
     // Sun Glow
     canvas.drawCircle(
       sunPos,
-      18,
-      Paint()..color = const Color(0xFFF59E0B).withValues(alpha: 0.25),
+      20,
+      Paint()..color = const Color(0xFFF59E0B).withValues(alpha: 0.3),
     );
     canvas.drawCircle(
       sunPos,
-      9,
+      10,
       Paint()..color = const Color(0xFFFBBF24),
     );
+
+    // Ray to center
+    canvas.drawLine(
+      Offset(cx, cy),
+      sunPos,
+      Paint()
+        ..color = const Color(0xFFF59E0B).withValues(alpha: 0.4)
+        ..strokeWidth = 1.5
+        ..style = PaintingStyle.stroke,
+    );
+
+    // Center Device Marker
+    canvas.drawCircle(Offset(cx, cy), 5, Paint()..color = isLive ? AppTheme.success : AppTheme.primary);
+  }
+
+  void _drawCardinal(Canvas canvas, double cx, double cy, double maxR, double baseRotation, double deg, String label, Color color, {bool isBold = false}) {
+    final rad = (deg - 90.0) * math.pi / 180.0 + baseRotation;
+    final r = maxR - 12;
+    final pos = Offset(cx + r * math.cos(rad), cy + r * math.sin(rad));
+    
+    final tp = TextPainter(
+      text: TextSpan(
+        text: label,
+        style: TextStyle(
+          color: color,
+          fontSize: isBold ? 14 : 11,
+          fontWeight: isBold ? FontWeight.w900 : FontWeight.bold,
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+
+    tp.paint(canvas, Offset(pos.dx - tp.width / 2, pos.dy - tp.height / 2));
   }
 
   Offset _polarToScreen(
-      double cx, double cy, double maxR, double azDeg, double elDeg) {
+      double cx, double cy, double maxR, double azDeg, double elDeg, double baseRotation) {
     final r = maxR * (1.0 - (elDeg.clamp(0.0, 90.0) / 90.0));
-    final rad = (azDeg - 90.0) * math.pi / 180.0;
+    final rad = (azDeg - 90.0) * math.pi / 180.0 + baseRotation;
     return Offset(cx + r * math.cos(rad), cy + r * math.sin(rad));
   }
 

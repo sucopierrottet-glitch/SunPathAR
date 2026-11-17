@@ -6,10 +6,13 @@ import 'theme/app_theme.dart';
 
 import 'services/billing_service.dart';
 
+import 'services/sensor_service.dart';
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await StorageService.instance.init();
   await BillingService.instance.init();
+  SensorService.instance.init();
   runApp(const SunPathArApp());
 }
 
