@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
@@ -6,6 +7,7 @@ import '../calculators/solar_calculator.dart';
 import '../services/pdf_report_service.dart';
 import '../services/sensor_service.dart';
 import '../services/storage_service.dart';
+import '../services/weather_solar_service.dart';
 import '../theme/app_theme.dart';
 import 'paywall_screen.dart';
 
@@ -21,25 +23,36 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
   late int _currentIndex;
   double _solarHour = 13.5;
   int _dayOfYear = 172;
-  double _objectHeight = 3.0;
+  final double _objectHeight = 3.0;
   final TextEditingController _siteNameCtrl =
-      TextEditingController(text: 'Mi Proyecto Solar & Hogar');
+      TextEditingController(text: 'Mi Medición Solar');
   late TextEditingController _latCtrl;
   late TextEditingController _lonCtrl;
   late TextEditingController _inspectorCtrl;
 
-  // Cuidado de Plantas Interactivo
-  int _selectedPlantType = 0; // 0 = Suculentas/Cactus, 1 = Monstera/Ficus, 2 = Orquídeas/Helechos
-  // Detector de Luz de Vivienda
-  int _selectedRoomOrientation = 0; // 0 = Ventana Este, 1 = Ventana Sur, 2 = Ventana Oeste, 3 = Ventana Norte
+  // Fotografía AR
+  int _photoMode = 0; // 0 = Luz Dorada Rostro, 1 = Contraluz/Halo, 2 = Capturar Sol, 3 = Luz Cine 45°
+  String? _cameraStatusNote;
+
+  // Estacionamiento a la sombra
+  double _parkingStayHours = 3.0;
+
+  // Cronómetro Vitamina D / Sol Seguro
+  Timer? _sunTimer;
+  int _sunSecondsElapsed = 0;
+  bool _isSunTimerRunning = false;
+
+  // Escáner de Hogar & Obstáculos
+  double? _frozenWindowAzimuth;
+  double? _frozenObstacleAngle;
+  bool _gpsLoading = false;
 
   @override
   void initState() {
     super.initState();
     _currentIndex = widget.initialIndex;
     final now = DateTime.now();
-    _dayOfYear = int.parse(
-        ((now.difference(DateTime(now.year, 1, 1)).inDays) + 1).toString());
+    _dayOfYear = (now.difference(DateTime(now.year, 1, 1)).inDays) + 1;
     _solarHour = (now.hour + (now.minute / 60.0)).clamp(0.0, 24.0);
 
     final store = StorageService.instance;
@@ -50,6 +63,10 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
 
   @override
   void dispose() {
+    _sunTimer?.cancel();
+    if (SensorService.instance.isCameraActive) {
+      SensorService.instance.stopCamera();
+    }
     _siteNameCtrl.dispose();
     _latCtrl.dispose();
     _lonCtrl.dispose();
@@ -57,14 +74,105 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
     super.dispose();
   }
 
+  Future<void> _fetchRealGpsAndWeather(StorageService store) async {
+    setState(() => _gpsLoading = true);
+    final res = await SensorService.instance.fetchGpsLocation();
+    if (!mounted) return;
+
+    if (res != null && res['status'] == 'ok') {
+      final lat = (res['lat'] as num).toDouble();
+      final lon = (res['lon'] as num).toDouble();
+      _latCtrl.text = lat.toStringAsFixed(4);
+      _lonCtrl.text = lon.toStringAsFixed(4);
+      await store.updateSettings(
+        latitude: lat,
+        longitude: lon,
+        inspectorName: store.inspectorName,
+      );
+      await WeatherSolarService.instance.refresh(latitude: lat, longitude: lon);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Ubicación GPS y Clima Solar actualizados ✓'),
+            backgroundColor: AppTheme.success,
+          ),
+        );
+      }
+    } else {
+      await WeatherSolarService.instance.refresh(
+        latitude: store.latitude,
+        longitude: store.longitude,
+      );
+      if (mounted) {
+        final st = res?['status'] ?? 'offline';
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              st == 'permission_denied'
+                  ? 'Permiso GPS denegado. Actualizamos el clima con tus coordenadas actuales.'
+                  : 'Clima solar actualizado para tus coordenadas actuales.',
+            ),
+            backgroundColor: AppTheme.primary,
+          ),
+        );
+      }
+    }
+
+    if (mounted) setState(() => _gpsLoading = false);
+  }
+
+  Future<void> _toggleCamera({bool? front}) async {
+    final sensor = SensorService.instance;
+    if (sensor.isCameraActive && front == null) {
+      await sensor.stopCamera();
+      setState(() => _cameraStatusNote = null);
+      return;
+    }
+
+    final status = await sensor.startCamera(front: front ?? sensor.isFrontCamera);
+    if (!mounted) return;
+    if (status == 'ok') {
+      setState(() => _cameraStatusNote = null);
+    } else if (status == 'permission_denied') {
+      setState(() => _cameraStatusNote = 'Permiso de cámara denegado. Actívalo en Ajustes.');
+    } else {
+      setState(() => _cameraStatusNote = 'Modo radar AR activo (usa el HUD con tus sensores).');
+    }
+  }
+
+  void _toggleSunTimer() {
+    if (_isSunTimerRunning) {
+      _sunTimer?.cancel();
+      setState(() => _isSunTimerRunning = false);
+    } else {
+      setState(() => _isSunTimerRunning = true);
+      _sunTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+        if (!mounted) return;
+        setState(() => _sunSecondsElapsed++);
+      });
+    }
+  }
+
+  void _resetSunTimer() {
+    _sunTimer?.cancel();
+    setState(() {
+      _isSunTimerRunning = false;
+      _sunSecondsElapsed = 0;
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     return ListenableBuilder(
-      listenable:
-          Listenable.merge([StorageService.instance, SensorService.instance]),
+      listenable: Listenable.merge([
+        StorageService.instance,
+        SensorService.instance,
+        WeatherSolarService.instance,
+      ]),
       builder: (context, _) {
         final store = StorageService.instance;
         final sensor = SensorService.instance;
+        final weather = WeatherSolarService.instance;
 
         final pos = SolarCalculator.calculate(
           latitude: store.latitude,
@@ -85,20 +193,19 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
           appBar: AppBar(
             title: Row(
               children: [
-                const Icon(Icons.wb_sunny_rounded,
-                    color: AppTheme.primary, size: 24),
-                const SizedBox(width: 10),
+                const Icon(Icons.wb_sunny_rounded, color: AppTheme.primary, size: 22),
+                const SizedBox(width: 8),
                 Expanded(
                   child: Text(
                     _currentIndex == 0
-                        ? '☀️ Brújula & Bóveda Solar'
+                        ? 'Cielo & Brújula'
                         : _currentIndex == 1
-                            ? '📸 Fotos, UV & Vitamina D'
+                            ? 'Fotos, Auto & UV'
                             : _currentIndex == 2
-                                ? '🏡 Casas, Plantas & Sombras'
+                                ? 'Hogar & Plantas'
                                 : _currentIndex == 3
-                                    ? '📁 Reportes & Estudios'
-                                    : '⚙️ Ajustes',
+                                    ? 'Estudios Guardados'
+                                    : 'Ajustes & GPS',
                     style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 17),
                     overflow: TextOverflow.ellipsis,
                   ),
@@ -106,22 +213,31 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
               ],
             ),
             actions: [
+              TextButton.icon(
+                onPressed: _gpsLoading ? null : () => _fetchRealGpsAndWeather(store),
+                icon: _gpsLoading
+                    ? const SizedBox(
+                        width: 14,
+                        height: 14,
+                        child: CircularProgressIndicator(strokeWidth: 2, color: AppTheme.primary),
+                      )
+                    : const Icon(Icons.my_location_rounded, size: 16, color: AppTheme.primary),
+                label: const Text(
+                  'GPS',
+                  style: TextStyle(color: AppTheme.primary, fontSize: 11, fontWeight: FontWeight.w800),
+                ),
+              ),
               Padding(
-                padding: const EdgeInsets.only(right: 12),
+                padding: const EdgeInsets.only(right: 10),
                 child: ActionChip(
                   avatar: Icon(
-                    sensor.useLiveSensors
-                        ? Icons.explore_rounded
-                        : Icons.tune_rounded,
-                    size: 16,
-                    color: sensor.useLiveSensors
-                        ? AppTheme.success
-                        : AppTheme.primary,
+                    sensor.useLiveSensors ? Icons.explore_rounded : Icons.tune_rounded,
+                    size: 15,
+                    color: sensor.useLiveSensors ? AppTheme.success : AppTheme.primary,
                   ),
                   label: Text(
-                    sensor.useLiveSensors ? 'BRÚJULA EN VIVO' : 'SIMULADOR',
-                    style: const TextStyle(
-                        fontSize: 11, fontWeight: FontWeight.w700),
+                    sensor.useLiveSensors ? 'EN VIVO' : 'MANUAL',
+                    style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w800),
                   ),
                   onPressed: () => sensor.setLiveMode(!sensor.useLiveSensors),
                 ),
@@ -139,7 +255,7 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
                   },
                   child: Container(
                     width: double.infinity,
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 7),
                     decoration: BoxDecoration(
                       color: store.isTrialExpired
                           ? Colors.redAccent.withValues(alpha: 0.15)
@@ -156,7 +272,7 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
                       children: [
                         Icon(
                           store.isTrialExpired ? Icons.lock_clock_rounded : Icons.timer_outlined,
-                          size: 16,
+                          size: 15,
                           color: store.isTrialExpired ? Colors.redAccent : AppTheme.primary,
                         ),
                         const SizedBox(width: 8),
@@ -195,11 +311,11 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
                 child: IndexedStack(
                   index: _currentIndex,
                   children: [
-                    _buildSolarDomeTab(pos, arcPoints, store, sensor),
-                    _buildLifestylePhotoHealthTab(pos, store),
-                    _buildHomeAndPlantsTab(pos, store),
+                    _buildSolarDomeTab(pos, arcPoints, store, sensor, weather),
+                    _buildLifestylePhotoHealthTab(pos, store, sensor, weather),
+                    _buildHomeAndPlantsTab(pos, arcPoints, store, sensor),
                     _buildSavedStudiesTab(store),
-                    _buildSettingsTab(store),
+                    _buildSettingsTab(store, weather),
                   ],
                 ),
               ),
@@ -209,7 +325,12 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
             backgroundColor: AppTheme.darkSurface,
             indicatorColor: AppTheme.primary.withValues(alpha: 0.2),
             selectedIndex: _currentIndex,
-            onDestinationSelected: (idx) => setState(() => _currentIndex = idx),
+            onDestinationSelected: (idx) {
+              if (idx != 1 && sensor.isCameraActive) {
+                sensor.stopCamera();
+              }
+              setState(() => _currentIndex = idx);
+            },
             destinations: const [
               NavigationDestination(
                 icon: Icon(Icons.wb_twilight_rounded),
@@ -219,7 +340,7 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
               NavigationDestination(
                 icon: Icon(Icons.camera_alt_outlined),
                 selectedIcon: Icon(Icons.camera_alt_rounded, color: AppTheme.primary),
-                label: 'Fotos & UV',
+                label: 'Fotos & Auto',
               ),
               NavigationDestination(
                 icon: Icon(Icons.home_work_outlined),
@@ -243,90 +364,130 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
     );
   }
 
-  // ==========================================
-  // PESTAÑA 1: BÓVEDA 3D Y BRÚJULA EN VIVO
-  // ==========================================
+  // =========================================================================
+  // PESTAÑA 1: BÓVEDA 3D + CLIMA SOLAR GRATIS + SENSORES EN VIVO
+  // =========================================================================
   Widget _buildSolarDomeTab(
     SolarPositionResult pos,
     List<SolarPositionResult> arc,
     StorageService store,
     SensorService sensor,
+    WeatherSolarService weather,
   ) {
+    final wData = weather.data;
+
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // Banner de Estado Dinámico del Sol
+          // Clima Solar Gratis (Open-Meteo + Sensor de Luz)
           Container(
             padding: const EdgeInsets.all(14),
             decoration: BoxDecoration(
-              gradient: const LinearGradient(
-                colors: [Color(0xFF1E293B), Color(0xFF0F172A)],
-              ),
+              gradient: const LinearGradient(colors: [Color(0xFF1E293B), Color(0xFF0F172A)]),
               borderRadius: BorderRadius.circular(16),
               border: Border.all(color: AppTheme.primary.withValues(alpha: 0.4)),
             ),
-            child: Row(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Icon(Icons.wb_sunny_rounded, color: AppTheme.primary, size: 28),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        pos.sunStatusDescription,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 13,
-                          fontWeight: FontWeight.bold,
-                        ),
+                Row(
+                  children: [
+                    const Icon(Icons.wb_sunny_rounded, color: AppTheme.primary, size: 26),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            pos.sunStatusDescription,
+                            style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold),
+                          ),
+                          Text(
+                            wData != null
+                                ? '📍 ${wData.cityName} • Amanece ${pos.sunriseTime} • Ocaso ${pos.sunsetTime}'
+                                : 'Amanece ${pos.sunriseTime} • Cenit ${pos.solarNoonTime} • Ocaso ${pos.sunsetTime}',
+                            style: const TextStyle(color: AppTheme.textSecondary, fontSize: 11),
+                          ),
+                        ],
                       ),
-                      const SizedBox(height: 2),
-                      Text(
-                        'Amanece: ${pos.sunriseTime} • Cenit: ${pos.solarNoonTime} • Ocaso: ${pos.sunsetTime}',
-                        style: const TextStyle(color: AppTheme.textSecondary, fontSize: 11),
-                      ),
-                    ],
-                  ),
+                    ),
+                    IconButton(
+                      tooltip: 'Actualizar Clima Solar Gratis',
+                      onPressed: weather.isLoading
+                          ? null
+                          : () => weather.refresh(latitude: store.latitude, longitude: store.longitude),
+                      icon: weather.isLoading
+                          ? const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2, color: AppTheme.primary),
+                            )
+                          : const Icon(Icons.cloud_sync_rounded, color: AppTheme.primary, size: 22),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 6,
+                  children: [
+                    _miniChip(
+                      Icons.thermostat_rounded,
+                      wData != null ? '${wData.temperatureC.toStringAsFixed(0)}°C' : 'Clima: Toca 🔄',
+                      Colors.orangeAccent,
+                    ),
+                    _miniChip(
+                      Icons.cloud_outlined,
+                      wData != null ? '${wData.cloudCoverPercent}% nubes' : 'Nubes: --',
+                      Colors.lightBlueAccent,
+                    ),
+                    _miniChip(
+                      Icons.wb_iridescent_rounded,
+                      'UV ${wData != null ? wData.liveUvIndex.toStringAsFixed(1) : pos.uvIndexEstimate}',
+                      Colors.amberAccent,
+                    ),
+                    _miniChip(
+                      Icons.light_mode_rounded,
+                      '${sensor.lightLux.toStringAsFixed(0)} lx',
+                      AppTheme.success,
+                    ),
+                  ],
                 ),
               ],
             ),
           ),
           const SizedBox(height: 12),
 
-          // Indicador de Brújula en Vivo
-          if (sensor.useLiveSensors)
-            Container(
-              margin: const EdgeInsets.only(bottom: 12),
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-              decoration: BoxDecoration(
-                color: const Color(0xFF0F231D),
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: AppTheme.success.withValues(alpha: 0.4)),
-              ),
-              child: Row(
-                children: [
-                  const Icon(Icons.compass_calibration_rounded, color: AppTheme.success, size: 18),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      'Brújula en vivo: ${sensor.compassAzimuth.toStringAsFixed(0)}° (${_getCardinalLabel(sensor.compassAzimuth)}) • Inclinación: ${sensor.devicePitch.toStringAsFixed(0)}°',
-                      style: const TextStyle(
-                        color: AppTheme.success,
-                        fontSize: 12,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-
-          // Lienzo de la Bóveda Celeste
+          // Indicador de Brújula y Orientación en Vivo
           Container(
-            height: 290,
+            margin: const EdgeInsets.only(bottom: 12),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+            decoration: BoxDecoration(
+              color: const Color(0xFF0F231D),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: AppTheme.success.withValues(alpha: 0.4)),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.compass_calibration_rounded, color: AppTheme.success, size: 18),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    sensor.useLiveSensors
+                        ? 'Apuntando: ${sensor.compassAzimuth.toStringAsFixed(0)}° (${_getCardinalLabel(sensor.compassAzimuth)}) • Elevación cámara: ${sensor.cameraElevation.toStringAsFixed(0)}°'
+                        : 'Modo Manual: Activa EN VIVO arriba para usar tus sensores',
+                    style: const TextStyle(color: AppTheme.success, fontSize: 11, fontWeight: FontWeight.bold),
+                  ),
+                ),
+              ],
+            ),
+          ),
+
+          // Bóveda Celeste con Cono de Visión del Teléfono
+          Container(
+            height: 280,
             padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(
               color: AppTheme.darkCard,
@@ -343,14 +504,14 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
               child: const SizedBox.expand(),
             ),
           ),
-          const SizedBox(height: 14),
+          const SizedBox(height: 12),
 
           // KPIs Clave
           Row(
             children: [
               Expanded(
                 child: _metricCard(
-                  'Elevación Solar',
+                  'Altura del Sol',
                   '${pos.elevationDeg.toStringAsFixed(1)}°',
                   pos.elevationDeg > 0 ? AppTheme.primary : AppTheme.accent,
                   Icons.height_rounded,
@@ -359,7 +520,7 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
               const SizedBox(width: 10),
               Expanded(
                 child: _metricCard(
-                  'Orientación (Azimut)',
+                  'Posición Solar',
                   '${pos.azimuthDeg.toStringAsFixed(1)}° (${_getCardinalLabel(pos.azimuthDeg)})',
                   AppTheme.accent,
                   Icons.explore_rounded,
@@ -369,7 +530,7 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
           ),
           const SizedBox(height: 12),
 
-          // Controles de Simulación (Hora y Fecha)
+          // Controles de Simulación
           Container(
             padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
@@ -383,10 +544,7 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    const Text(
-                      'Hora del Día (Simulación Solar)',
-                      style: TextStyle(fontWeight: FontWeight.w700, color: AppTheme.textSecondary),
-                    ),
+                    const Text('Hora del Día', style: TextStyle(fontWeight: FontWeight.w700, color: AppTheme.textSecondary)),
                     Text(
                       '${_solarHour.floor().toString().padLeft(2, '0')}:${((_solarHour % 1) * 60).round().toString().padLeft(2, '0')} h',
                       style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 16, color: AppTheme.primary),
@@ -401,18 +559,11 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
                   inactiveColor: AppTheme.darkBorder,
                   onChanged: (v) => setState(() => _solarHour = v),
                 ),
-                const SizedBox(height: 10),
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    const Text(
-                      'Día del Año (Estaciones)',
-                      style: TextStyle(fontWeight: FontWeight.w700, color: AppTheme.textSecondary),
-                    ),
-                    Text(
-                      'Día $_dayOfYear / 365',
-                      style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 15, color: AppTheme.accent),
-                    ),
+                    const Text('Día del Año (Estación)', style: TextStyle(fontWeight: FontWeight.w700, color: AppTheme.textSecondary)),
+                    Text('Día $_dayOfYear / 365', style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 14, color: AppTheme.accent)),
                   ],
                 ),
                 Slider(
@@ -424,10 +575,10 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
                   onChanged: (v) => setState(() => _dayOfYear = v.round()),
                 ),
                 Wrap(
-                  spacing: 8,
+                  spacing: 6,
                   children: [
                     ActionChip(
-                      label: const Text('Hoy', style: TextStyle(fontSize: 11)),
+                      label: const Text('Ahora', style: TextStyle(fontSize: 11)),
                       onPressed: () {
                         final n = DateTime.now();
                         setState(() {
@@ -437,7 +588,7 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
                       },
                     ),
                     ActionChip(
-                      label: const Text('Solsticio Verano', style: TextStyle(fontSize: 11)),
+                      label: const Text('Verano', style: TextStyle(fontSize: 11)),
                       onPressed: () => setState(() => _dayOfYear = 172),
                     ),
                     ActionChip(
@@ -445,7 +596,7 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
                       onPressed: () => setState(() => _dayOfYear = 80),
                     ),
                     ActionChip(
-                      label: const Text('Solsticio Invierno', style: TextStyle(fontSize: 11)),
+                      label: const Text('Invierno', style: TextStyle(fontSize: 11)),
                       onPressed: () => setState(() => _dayOfYear = 355),
                     ),
                   ],
@@ -458,103 +609,287 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
     );
   }
 
-  // ==========================================
-  // PESTAÑA 2: FOTOGRAFÍA, UV & VITAMINA D
-  // ==========================================
-  Widget _buildLifestylePhotoHealthTab(SolarPositionResult pos, StorageService store) {
+  // =========================================================================
+  // PESTAÑA 2: CÁMARA AR FOTOGRAFÍA + RADAR ESTACIONAMIENTO + SALUD UV
+  // =========================================================================
+  Widget _buildLifestylePhotoHealthTab(
+    SolarPositionResult pos,
+    StorageService store,
+    SensorService sensor,
+    WeatherSolarService weather,
+  ) {
+    final alignment = SolarCalculator.calculateCameraAlignment(
+      sunAzimuth: pos.azimuthDeg,
+      sunElevation: pos.elevationDeg,
+      deviceAzimuth: sensor.compassAzimuth,
+      cameraElevation: sensor.cameraElevation,
+      isFrontCamera: sensor.isFrontCamera,
+      photoMode: _photoMode,
+    );
+
+    final wData = weather.data;
+
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // Tarjeta Golden Hour / Blue Hour
+          // 1. VISOR DE CÁMARA AR PARA FOTOGRAFÍA (FRONTAL Y TRASERA)
           Container(
-            padding: const EdgeInsets.all(18),
+            padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
-              gradient: const LinearGradient(
-                colors: [Color(0xFFB45309), Color(0xFFD97706)],
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-              ),
+              color: AppTheme.darkCard,
               borderRadius: BorderRadius.circular(18),
-              boxShadow: [
-                BoxShadow(
-                  color: const Color(0xFFD97706).withValues(alpha: 0.3),
-                  blurRadius: 16,
-                  offset: const Offset(0, 6),
-                ),
-              ],
+              border: Border.all(
+                color: alignment.isAligned ? AppTheme.success : AppTheme.primary.withValues(alpha: 0.6),
+                width: alignment.isAligned ? 2 : 1,
+              ),
             ),
             child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                const Row(
+                Row(
                   children: [
-                    Icon(Icons.camera_rounded, color: Colors.white, size: 24),
-                    SizedBox(width: 8),
-                    Text(
-                      'FOTOGRAFÍA & REDES SOCIALES',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.w900,
-                        fontSize: 14,
-                        letterSpacing: 1.0,
+                    const Icon(Icons.camera_enhance_rounded, color: AppTheme.primary, size: 22),
+                    const SizedBox(width: 8),
+                    const Expanded(
+                      child: Text(
+                        'DIRECTOR DE FOTOGRAFÍA AR',
+                        style: TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: 14),
+                      ),
+                    ),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: alignment.isAligned
+                            ? AppTheme.success.withValues(alpha: 0.2)
+                            : AppTheme.primary.withValues(alpha: 0.2),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Text(
+                        '${alignment.alignmentScore}% Precisión',
+                        style: TextStyle(
+                          color: alignment.isAligned ? AppTheme.success : AppTheme.primary,
+                          fontSize: 11,
+                          fontWeight: FontWeight.w900,
+                        ),
                       ),
                     ),
                   ],
                 ),
-                const SizedBox(height: 12),
-                const Text(
-                  'Golden Hour (Hora Dorada de la Tarde)',
-                  style: TextStyle(color: Colors.white70, fontSize: 12),
-                ),
-                Text(
-                  pos.goldenHourEvening,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 24,
-                    fontWeight: FontWeight.w900,
+                const SizedBox(height: 10),
+
+                // Modos Fotográficos
+                SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(
+                    children: [
+                      _modeChip(0, '✨ Luz en Rostro', _photoMode, (v) => setState(() => _photoMode = v)),
+                      const SizedBox(width: 6),
+                      _modeChip(1, '🌅 Halo Contraluz', _photoMode, (v) => setState(() => _photoMode = v)),
+                      const SizedBox(width: 6),
+                      _modeChip(2, '☀️ Ver el Sol', _photoMode, (v) => setState(() => _photoMode = v)),
+                      const SizedBox(width: 6),
+                      _modeChip(3, '🎬 Luz Cine 45°', _photoMode, (v) => setState(() => _photoMode = v)),
+                    ],
                   ),
                 ),
-                const SizedBox(height: 10),
+                const SizedBox(height: 12),
+
+                // Visor Cámara Nativa + HUD AR Superpuesto
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(14),
+                  child: Container(
+                    height: 290,
+                    color: const Color(0xFF070B14),
+                    child: Stack(
+                      fit: StackFit.expand,
+                      children: [
+                        if (sensor.isCameraActive && sensor.cameraTextureId != null)
+                          Center(
+                            child: Transform.scale(
+                              scaleX: sensor.isFrontCamera ? -1.0 : 1.0,
+                              child: RotatedBox(
+                                quarterTurns: ((sensor.sensorOrientation ~/ 90) + sensor.extraQuarterTurns) % 4,
+                                child: Texture(textureId: sensor.cameraTextureId!),
+                              ),
+                            ),
+                          )
+                        else
+                          Container(
+                            decoration: const BoxDecoration(
+                              gradient: RadialGradient(
+                                colors: [Color(0xFF1A263D), Color(0xFF080D17)],
+                              ),
+                            ),
+                            child: Center(
+                              child: Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  const Icon(Icons.videocam_outlined, color: AppTheme.textMuted, size: 42),
+                                  const SizedBox(height: 8),
+                                  const Text(
+                                    'Radar AR de Sensores Activo',
+                                    style: TextStyle(color: Colors.white70, fontWeight: FontWeight.bold, fontSize: 13),
+                                  ),
+                                  if (_cameraStatusNote != null) ...[
+                                    const SizedBox(height: 4),
+                                    Padding(
+                                      padding: const EdgeInsets.symmetric(horizontal: 20),
+                                      child: Text(
+                                        _cameraStatusNote!,
+                                        textAlign: TextAlign.center,
+                                        style: const TextStyle(color: AppTheme.primary, fontSize: 11),
+                                      ),
+                                    ),
+                                  ],
+                                ],
+                              ),
+                            ),
+                          ),
+
+                        // HUD AR con Mira, Sol Objetivo y Flechas Dinámicas
+                        CustomPaint(
+                          painter: _CameraArHudPainter(
+                            alignment: alignment,
+                            isFrontCamera: sensor.isFrontCamera,
+                          ),
+                        ),
+
+                        // Barra Superior de Instrucción Clara sobre la Cámara
+                        Positioned(
+                          top: 10,
+                          left: 10,
+                          right: 10,
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                            decoration: BoxDecoration(
+                              color: alignment.isAligned
+                                  ? AppTheme.success.withValues(alpha: 0.9)
+                                  : Colors.black.withValues(alpha: 0.7),
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Icon(
+                                  alignment.isAligned ? Icons.check_circle_rounded : Icons.screen_rotation_rounded,
+                                  color: alignment.isAligned ? Colors.black : AppTheme.primary,
+                                  size: 18,
+                                ),
+                                const SizedBox(width: 8),
+                                Flexible(
+                                  child: Text(
+                                    alignment.instructionText,
+                                    style: TextStyle(
+                                      color: alignment.isAligned ? Colors.black : Colors.white,
+                                      fontWeight: FontWeight.w900,
+                                      fontSize: 12,
+                                    ),
+                                    textAlign: TextAlign.center,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+
+                        // Indicador Inferior de Lente Activa
+                        Positioned(
+                          bottom: 10,
+                          left: 10,
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                            decoration: BoxDecoration(
+                              color: Colors.black.withValues(alpha: 0.65),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Text(
+                              sensor.isFrontCamera ? '🤳 Lente Frontal (Selfie)' : '📷 Lente Trasera',
+                              style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+
+                // Botones de Control de Cámara
                 Row(
                   children: [
                     Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text('🌅 Mañana (Amanecer)', style: TextStyle(color: Colors.white70, fontSize: 11)),
-                          Text(pos.goldenHourMorning, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13)),
-                        ],
+                      flex: 2,
+                      child: ElevatedButton.icon(
+                        onPressed: () => _toggleCamera(),
+                        icon: Icon(
+                          sensor.isCameraActive ? Icons.videocam_off_rounded : Icons.camera_alt_rounded,
+                          color: Colors.black,
+                          size: 18,
+                        ),
+                        label: Text(
+                          sensor.isCameraActive ? 'Cerrar Cámara' : 'Abrir Cámara en Vivo',
+                          style: const TextStyle(color: Colors.black, fontWeight: FontWeight.w900, fontSize: 12),
+                        ),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: sensor.isCameraActive ? Colors.amber : AppTheme.primary,
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                        ),
                       ),
                     ),
+                    const SizedBox(width: 8),
                     Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text('🌌 Hora Azul (Crepúsculo)', style: TextStyle(color: Colors.white70, fontSize: 11)),
-                          Text(pos.blueHourEvening, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13)),
-                        ],
+                      child: OutlinedButton.icon(
+                        onPressed: () => _toggleCamera(front: !sensor.isFrontCamera),
+                        icon: const Icon(Icons.cameraswitch_rounded, size: 17, color: Colors.white),
+                        label: Text(
+                          sensor.isFrontCamera ? 'Trasera' : 'Selfie',
+                          style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold),
+                        ),
+                        style: OutlinedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                          side: const BorderSide(color: AppTheme.darkBorder),
+                        ),
                       ),
                     ),
+                    if (sensor.isCameraActive) ...[
+                      const SizedBox(width: 6),
+                      IconButton(
+                        tooltip: 'Girar imagen cámara',
+                        onPressed: () => sensor.rotateCameraPreview(),
+                        icon: const Icon(Icons.rotate_right_rounded, color: AppTheme.primary),
+                      ),
+                    ],
                   ],
                 ),
                 const SizedBox(height: 12),
+
+                // Horarios de Hora Dorada + Calidad por Clima
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  padding: const EdgeInsets.all(12),
                   decoration: BoxDecoration(
-                    color: Colors.black.withValues(alpha: 0.25),
-                    borderRadius: BorderRadius.circular(8),
+                    gradient: const LinearGradient(colors: [Color(0xFF78350F), Color(0xFFB45309)]),
+                    borderRadius: BorderRadius.circular(12),
                   ),
-                  child: Row(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Icon(Icons.tips_and_updates_rounded, color: Colors.amberAccent, size: 16),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          'Apunta tu cámara a ${pos.azimuthDeg.toStringAsFixed(0)}° (${_getCardinalLabel(pos.azimuthDeg)}) para fotos cálidas y siluetas.',
-                          style: const TextStyle(color: Colors.white, fontSize: 11),
-                        ),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text('🌅 Hora Dorada: ${pos.goldenHourEvening}',
+                              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12)),
+                          Text('🌌 Azul: ${pos.blueHourEvening}',
+                              style: const TextStyle(color: Colors.white70, fontSize: 11)),
+                        ],
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        wData != null
+                            ? 'Calidad del cielo hoy (${wData.goldenHourQualityScore}%): ${wData.goldenHourQualityLabel}'
+                            : 'Toca el botón GPS o 🔄 en Bóveda 3D para medir nubosidad real de tu foto.',
+                        style: const TextStyle(color: Colors.amberAccent, fontSize: 11),
                       ),
                     ],
                   ),
@@ -564,7 +899,87 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
           ),
           const SizedBox(height: 16),
 
-          // Tarjeta de Salud: Vitamina D y Exposición UV
+          // 2. RADAR DE ESTACIONAMIENTO A LA SOMBRA (GRÁFICO CON BRÚJULA EN VIVO)
+          Container(
+            padding: const EdgeInsets.all(18),
+            decoration: BoxDecoration(
+              color: AppTheme.darkCard,
+              borderRadius: BorderRadius.circular(18),
+              border: Border.all(color: AppTheme.darkBorder),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  children: [
+                    const Icon(Icons.directions_car_filled_rounded, color: AppTheme.accent, size: 22),
+                    const SizedBox(width: 8),
+                    const Expanded(
+                      child: Text(
+                        'RADAR DE ESTACIONAMIENTO A LA SOMBRA',
+                        style: TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: 13),
+                      ),
+                    ),
+                    Text(
+                      '${_parkingStayHours.toStringAsFixed(0)}h estancia',
+                      style: const TextStyle(color: AppTheme.accent, fontWeight: FontWeight.bold, fontSize: 12),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                const Text(
+                  'Gira el teléfono en el estacionamiento: la flecha naranja señala hacia el Oeste / Sol, y la zona verde muestra dónde proyectará sombra un edificio o árbol.',
+                  style: TextStyle(color: AppTheme.textSecondary, fontSize: 11, height: 1.3),
+                ),
+                const SizedBox(height: 12),
+                SizedBox(
+                  height: 230,
+                  child: CustomPaint(
+                    painter: _ParkingShadowRadarPainter(
+                      deviceHeading: sensor.compassAzimuth,
+                      currentSunAzimuth: pos.azimuthDeg,
+                      latitude: store.latitude,
+                      stayHours: _parkingStayHours,
+                      solarHour: _solarHour,
+                      dayOfYear: _dayOfYear,
+                      isLive: sensor.useLiveSensors,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    const Text('Tiempo estacionado:', style: TextStyle(color: AppTheme.textSecondary, fontSize: 11)),
+                    Expanded(
+                      child: Slider(
+                        value: _parkingStayHours,
+                        min: 1.0,
+                        max: 6.0,
+                        divisions: 5,
+                        activeColor: AppTheme.accent,
+                        onChanged: (v) => setState(() => _parkingStayHours = v),
+                      ),
+                    ),
+                  ],
+                ),
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF0F231D),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: AppTheme.success.withValues(alpha: 0.4)),
+                  ),
+                  child: Text(
+                    '🅿️ Consejo en vivo: Estaciona al lado ESTE/NORESTE de un árbol o edificio. El sol se moverá hacia el Oeste (270°) y mantendrá tu auto cubierto durante las próximas ${_parkingStayHours.toStringAsFixed(0)} horas.',
+                    style: const TextStyle(color: AppTheme.success, fontSize: 11, height: 1.3),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
+
+          // 3. SALUD SOLAR: VITAMINA D + CRONÓMETRO SEGURO
           Container(
             padding: const EdgeInsets.all(18),
             decoration: BoxDecoration(
@@ -577,38 +992,24 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
               children: [
                 Row(
                   children: [
-                    Container(
-                      padding: const EdgeInsets.all(8),
-                      decoration: BoxDecoration(
-                        color: pos.isVitaminDOptimal ? AppTheme.success.withValues(alpha: 0.2) : Colors.amber.withValues(alpha: 0.2),
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                      child: Icon(
-                        pos.isVitaminDOptimal ? Icons.health_and_safety_rounded : Icons.wb_sunny_outlined,
-                        color: pos.isVitaminDOptimal ? AppTheme.success : Colors.amber,
-                        size: 24,
-                      ),
+                    Icon(
+                      pos.isVitaminDOptimal ? Icons.health_and_safety_rounded : Icons.wb_sunny_outlined,
+                      color: pos.isVitaminDOptimal ? AppTheme.success : Colors.amber,
+                      size: 24,
                     ),
-                    const SizedBox(width: 12),
+                    const SizedBox(width: 10),
                     Expanded(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          const Text(
-                            'SALUD & VITAMINA D',
-                            style: TextStyle(
-                              color: AppTheme.textSecondary,
-                              fontSize: 11,
-                              fontWeight: FontWeight.bold,
-                              letterSpacing: 0.8,
-                            ),
-                          ),
+                          const Text('SALUD, UV Y CRONÓMETRO DE SOL',
+                              style: TextStyle(color: AppTheme.textSecondary, fontSize: 11, fontWeight: FontWeight.bold)),
                           Text(
-                            pos.isVitaminDOptimal ? 'Ventana Óptima Activa ✓' : 'Sol Bajo para Vitamina D',
+                            pos.isVitaminDOptimal ? 'Ventana Óptima de Vitamina D ✓' : 'UV Suave / Paseo Seguro',
                             style: TextStyle(
                               color: pos.isVitaminDOptimal ? AppTheme.success : Colors.white,
-                              fontSize: 16,
                               fontWeight: FontWeight.w900,
+                              fontSize: 15,
                             ),
                           ),
                         ],
@@ -616,65 +1017,61 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
                     ),
                   ],
                 ),
-                const SizedBox(height: 16),
+                const SizedBox(height: 12),
                 Row(
                   children: [
                     Expanded(
                       child: _healthMiniCard(
-                        'Índice UV Estimado',
-                        '${pos.uvIndexEstimate} / 12',
-                        pos.uvIndexEstimate > 7 ? Colors.redAccent : (pos.uvIndexEstimate > 4 ? Colors.amber : AppTheme.success),
+                        wData != null ? 'UV Real (Nubes)' : 'UV Astronómico',
+                        '${wData != null ? wData.liveUvIndex.toStringAsFixed(1) : pos.uvIndexEstimate} / 12',
+                        pos.uvIndexEstimate > 7 ? Colors.redAccent : AppTheme.primary,
                         Icons.shield_outlined,
                       ),
                     ),
                     const SizedBox(width: 10),
                     Expanded(
                       child: _healthMiniCard(
-                        'Tiempo Seguro de Sol',
+                        'Tiempo Seguro Hoy',
                         '${pos.safeSunMinutes} min',
-                        AppTheme.primary,
+                        AppTheme.success,
                         Icons.timer_outlined,
                       ),
                     ),
                   ],
                 ),
                 const SizedBox(height: 14),
-                Text(
-                  pos.isVitaminDOptimal
-                      ? 'Con el sol a ${pos.elevationDeg.toStringAsFixed(0)}°, tus brazos y rostro sintetizan vitamina D eficientemente en solo 10-15 minutos.'
-                      : 'El sol está a menos de 38° de altura; la atmósfera filtra los rayos UVB. Excelente para pasear sin riesgo de quemaduras.',
-                  style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12, height: 1.4),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 16),
-
-          // Consejos Rápidos de Vida Cotidiana
-          Container(
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: AppTheme.darkCard,
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(color: AppTheme.darkBorder),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Row(
-                  children: [
-                    Icon(Icons.directions_car_rounded, color: AppTheme.accent, size: 20),
-                    SizedBox(width: 8),
-                    Text(
-                      'ESTACIONAMIENTO & SOMBRA INTELIGENTE',
-                      style: TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  'El sol se pondrá por el ${_getCardinalLabel(pos.azimuthDeg)} (${pos.azimuthDeg.toStringAsFixed(0)}°). Si estacionas junto a un muro o edificio ubicado al oeste, tu auto tendrá sombra natural por la tarde.',
-                  style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12, height: 1.4),
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF131D2E),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text('Cronómetro de Exposición', style: TextStyle(color: AppTheme.textSecondary, fontSize: 11)),
+                            Text(
+                              '${(_sunSecondsElapsed ~/ 60).toString().padLeft(2, '0')}:${(_sunSecondsElapsed % 60).toString().padLeft(2, '0')} / ${pos.safeSunMinutes}:00',
+                              style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.w900),
+                            ),
+                          ],
+                        ),
+                      ),
+                      IconButton.filled(
+                        onPressed: _toggleSunTimer,
+                        style: IconButton.styleFrom(backgroundColor: AppTheme.primary, foregroundColor: Colors.black),
+                        icon: Icon(_isSunTimerRunning ? Icons.pause_rounded : Icons.play_arrow_rounded),
+                      ),
+                      const SizedBox(width: 6),
+                      IconButton(
+                        onPressed: _resetSunTimer,
+                        icon: const Icon(Icons.refresh_rounded, color: AppTheme.textMuted),
+                      ),
+                    ],
+                  ),
                 ),
               ],
             ),
@@ -684,16 +1081,32 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
     );
   }
 
-  // ==========================================
-  // PESTAÑA 3: HOGAR, PLANTAS & SOMBRAS
-  // ==========================================
-  Widget _buildHomeAndPlantsTab(SolarPositionResult pos, StorageService store) {
+  // =========================================================================
+  // PESTAÑA 3: HOGAR, VENTANAS EN VIVO, LUXÓMETRO DE PLANTAS E INCLINÓMETRO
+  // =========================================================================
+  Widget _buildHomeAndPlantsTab(
+    SolarPositionResult pos,
+    List<SolarPositionResult> arc,
+    StorageService store,
+    SensorService sensor,
+  ) {
+    final activeWindowAz = _frozenWindowAzimuth ?? sensor.compassAzimuth;
+    final windowSun = SolarCalculator.calculateWindowSunlight(
+      windowAzimuth: activeWindowAz,
+      dailyArc: arc,
+    );
+
+    final lux = sensor.lightLux;
+    final obstacleAngle = (_frozenObstacleAngle ?? sensor.cameraElevation).clamp(0.0, 89.0);
+    final sunInThatDir = pos; // Compara contra la altura solar actual o máxima del día
+    final isBlocked = sunInThatDir.elevationDeg > 0 && obstacleAngle > sunInThatDir.elevationDeg;
+
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // Buscador de Luz para Casas y Pisos
+          // 1. ESCÁNER DE VENTANAS EN VIVO CON BRÚJULA
           Container(
             padding: const EdgeInsets.all(18),
             decoration: BoxDecoration(
@@ -702,54 +1115,93 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
               border: Border.all(color: AppTheme.primary.withValues(alpha: 0.5)),
             ),
             child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                const Row(
+                Row(
                   children: [
-                    Icon(Icons.apartment_rounded, color: AppTheme.primary, size: 24),
-                    SizedBox(width: 10),
-                    Expanded(
+                    const Icon(Icons.window_rounded, color: AppTheme.primary, size: 22),
+                    const SizedBox(width: 8),
+                    const Expanded(
                       child: Text(
-                        'EVALUADOR DE LUZ PARA CASAS Y PISOS',
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.w900,
-                          fontSize: 13,
-                        ),
+                        'ESCÁNER DE VENTANAS EN VIVO',
+                        style: TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: 13),
+                      ),
+                    ),
+                    OutlinedButton.icon(
+                      onPressed: () {
+                        setState(() {
+                          _frozenWindowAzimuth = _frozenWindowAzimuth == null ? sensor.compassAzimuth : null;
+                        });
+                      },
+                      icon: Icon(
+                        _frozenWindowAzimuth != null ? Icons.lock_rounded : Icons.explore_rounded,
+                        size: 14,
+                        color: _frozenWindowAzimuth != null ? Colors.amber : AppTheme.success,
+                      ),
+                      label: Text(
+                        _frozenWindowAzimuth != null ? 'Soltar' : 'Fijar Ventana',
+                        style: const TextStyle(fontSize: 11, color: Colors.white),
+                      ),
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                        side: const BorderSide(color: AppTheme.darkBorder),
                       ),
                     ),
                   ],
                 ),
-                const SizedBox(height: 8),
+                const SizedBox(height: 6),
                 const Text(
-                  '¿Estás visitando una vivienda para alquilar o comprar? Selecciona hacia dónde mira la ventana o balcón:',
-                  style: TextStyle(color: AppTheme.textSecondary, fontSize: 12),
+                  'Párate frente a una ventana o balcón y apunta el teléfono hacia afuera: la brújula calcula en vivo cuántas horas de sol directo entrarán.',
+                  style: TextStyle(color: AppTheme.textSecondary, fontSize: 11),
                 ),
                 const SizedBox(height: 12),
-                SingleChildScrollView(
-                  scrollDirection: Axis.horizontal,
-                  child: Row(
-                    children: [
-                      _orientationChip(0, 'Ventana Este (Amanecer)', Icons.wb_twilight_rounded),
-                      const SizedBox(width: 8),
-                      _orientationChip(1, 'Ventana Sur (Sol Máximo)', Icons.wb_sunny_rounded),
-                      const SizedBox(width: 8),
-                      _orientationChip(2, 'Ventana Oeste (Tardes)', Icons.nightlight_round),
-                      const SizedBox(width: 8),
-                      _orientationChip(3, 'Ventana Norte (Luz Difusa)', Icons.cloud_outlined),
-                    ],
+                SizedBox(
+                  height: 165,
+                  child: CustomPaint(
+                    painter: _WindowSunScannerPainter(
+                      windowAzimuth: activeWindowAz,
+                      dailyArc: arc,
+                    ),
                   ),
                 ),
-                const SizedBox(height: 14),
+                const SizedBox(height: 10),
+                Row(
+                  children: [
+                    Expanded(
+                      child: _healthMiniCard(
+                        'Orientación Ventana',
+                        '${activeWindowAz.toStringAsFixed(0)}° (${_getCardinalLabel(activeWindowAz)})',
+                        AppTheme.primary,
+                        Icons.explore_outlined,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: _healthMiniCard(
+                        'Sol Directo Hoy',
+                        '${windowSun.directSunHours.toStringAsFixed(1)} hrs (${windowSun.firstSunTime}-${windowSun.lastSunTime})',
+                        AppTheme.success,
+                        Icons.wb_sunny_outlined,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
                 Container(
                   padding: const EdgeInsets.all(12),
                   decoration: BoxDecoration(
                     color: const Color(0xFF131D2E),
                     borderRadius: BorderRadius.circular(12),
                   ),
-                  child: Text(
-                    _getRoomLightAdvice(_selectedRoomOrientation),
-                    style: const TextStyle(color: Colors.white, fontSize: 12, height: 1.4),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(windowSun.thermalVerdict,
+                          style: const TextStyle(color: AppTheme.primary, fontWeight: FontWeight.bold, fontSize: 12)),
+                      const SizedBox(height: 4),
+                      Text(windowSun.bestRoomUse,
+                          style: const TextStyle(color: Colors.white70, fontSize: 11)),
+                    ],
                   ),
                 ),
               ],
@@ -757,48 +1209,61 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
           ),
           const SizedBox(height: 16),
 
-          // Asistente Solar para Plantas de Interior
+          // 2. LUXÓMETRO DE PLANTAS CON SENSOR FÍSICO DE LUZ (TYPE_LIGHT)
           Container(
             padding: const EdgeInsets.all(18),
             decoration: BoxDecoration(
               color: AppTheme.darkCard,
               borderRadius: BorderRadius.circular(18),
-              border: Border.all(color: AppTheme.darkBorder),
+              border: Border.all(color: AppTheme.success.withValues(alpha: 0.4)),
             ),
             child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                const Row(
+                Row(
                   children: [
-                    Icon(Icons.eco_rounded, color: AppTheme.success, size: 22),
-                    SizedBox(width: 10),
-                    Text(
-                      '¿DÓNDE PONER MIS PLANTAS?',
-                      style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+                    const Icon(Icons.eco_rounded, color: AppTheme.success, size: 22),
+                    const SizedBox(width: 8),
+                    const Expanded(
+                      child: Text(
+                        'MEDIDOR DE LUZ PARA PLANTAS (SENSOR LUX)',
+                        style: TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: 13),
+                      ),
+                    ),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: AppTheme.success.withValues(alpha: 0.2),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Text(
+                        '${lux.toStringAsFixed(0)} lx',
+                        style: const TextStyle(color: AppTheme.success, fontWeight: FontWeight.w900, fontSize: 12),
+                      ),
                     ),
                   ],
                 ),
-                const SizedBox(height: 10),
-                SegmentedButton<int>(
-                  segments: const [
-                    ButtonSegment(value: 0, label: Text('Suculentas', style: TextStyle(fontSize: 11))),
-                    ButtonSegment(value: 1, label: Text('Monsteras', style: TextStyle(fontSize: 11))),
-                    ButtonSegment(value: 2, label: Text('Orquídeas', style: TextStyle(fontSize: 11))),
-                  ],
-                  selected: {_selectedPlantType},
-                  onSelectionChanged: (set) => setState(() => _selectedPlantType = set.first),
+                const SizedBox(height: 6),
+                Text(
+                  sensor.hasLight
+                      ? 'Coloca la pantalla del teléfono donde pondrás tu maceta. Sensor físico activo leyendo intensidad luminosa en tiempo real.'
+                      : 'Sensor de luz ambiental simulado. Mueve el control o apunta a la ventana para diagnosticar compatibilidad.',
+                  style: const TextStyle(color: AppTheme.textSecondary, fontSize: 11),
                 ),
                 const SizedBox(height: 12),
-                Text(
-                  _getPlantAdvice(_selectedPlantType),
-                  style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12, height: 1.4),
-                ),
+                _luxDiagnosisBanner(lux),
+                const SizedBox(height: 12),
+                _plantMatchBar('🌵 Suculentas & Cactus', _computePlantMatch(lux, 5000, 30000)),
+                _plantMatchBar('🍅 Huerto & Aromáticas (Albahaca)', _computePlantMatch(lux, 8000, 40000)),
+                _plantMatchBar('🌿 Monstera, Ficus & Potos', _computePlantMatch(lux, 800, 6000)),
+                _plantMatchBar('🌸 Orquídeas & Anturios', _computePlantMatch(lux, 400, 2500)),
+                _plantMatchBar('🪴 Sansevieria & Zamioculca', _computePlantMatch(lux, 120, 2000)),
               ],
             ),
           ),
           const SizedBox(height: 16),
 
-          // Calculadora de Sombras de Obstáculos (Árboles, Muros, Paneles)
+          // 3. ESCÁNER DE SOMBRAS Y OBSTÁCULOS CON INCLINÓMETRO ("¿ME TAPARÁ EL EDIFICIO?")
           Container(
             padding: const EdgeInsets.all(18),
             decoration: BoxDecoration(
@@ -807,78 +1272,108 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
               border: Border.all(color: AppTheme.darkBorder),
             ),
             child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
+                Row(
+                  children: [
+                    const Icon(Icons.architecture_rounded, color: AppTheme.accent, size: 22),
+                    const SizedBox(width: 8),
+                    const Expanded(
+                      child: Text(
+                        '¿ESE EDIFICIO O ÁRBOL ME DARÁ SOMBRA?',
+                        style: TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: 13),
+                      ),
+                    ),
+                    TextButton(
+                      onPressed: () {
+                        setState(() {
+                          _frozenObstacleAngle = _frozenObstacleAngle == null ? sensor.cameraElevation : null;
+                        });
+                      },
+                      child: Text(_frozenObstacleAngle != null ? 'Soltar' : 'Medir / Fijar',
+                          style: const TextStyle(color: AppTheme.primary, fontSize: 11, fontWeight: FontWeight.bold)),
+                    ),
+                  ],
+                ),
                 const Text(
-                  'CÁLCULO DE SOMBRAS & PANELES SOLARES',
-                  style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+                  'Apunta el borde superior del teléfono hacia la cima de un edificio o árbol frente a tu terraza/jardín. El clinómetro mide su ángulo y verifica si tapa al sol.',
+                  style: TextStyle(color: AppTheme.textSecondary, fontSize: 11),
+                ),
+                const SizedBox(height: 12),
+                SizedBox(
+                  height: 140,
+                  child: CustomPaint(
+                    painter: _ObstacleClinometerPainter(
+                      obstacleAngleDeg: obstacleAngle,
+                      sunElevationDeg: pos.elevationDeg.clamp(0.0, 90.0),
+                    ),
+                  ),
                 ),
                 const SizedBox(height: 10),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    const Text('Altura de obstáculo o muro:', style: TextStyle(color: AppTheme.textSecondary, fontSize: 12)),
-                    Text('${_objectHeight.toStringAsFixed(1)} m', style: const TextStyle(color: AppTheme.primary, fontWeight: FontWeight.bold, fontSize: 15)),
-                  ],
-                ),
-                Slider(
-                  value: _objectHeight,
-                  min: 0.5,
-                  max: 15.0,
-                  divisions: 29,
-                  activeColor: AppTheme.primary,
-                  onChanged: (v) => setState(() => _objectHeight = v),
-                ),
-                const SizedBox(height: 8),
-                Row(
-                  children: [
-                    Expanded(
-                      child: _metricCard('Longitud Sombra', '${pos.shadowLengthMeters.toStringAsFixed(2)} m', AppTheme.primary, Icons.straighten_rounded),
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: isBlocked
+                        ? Colors.redAccent.withValues(alpha: 0.14)
+                        : AppTheme.success.withValues(alpha: 0.14),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                      color: isBlocked ? Colors.redAccent.withValues(alpha: 0.5) : AppTheme.success.withValues(alpha: 0.5),
                     ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: _metricCard('Inclinación Panel', '${pos.optimalPvTiltDeg.toStringAsFixed(1)}°', AppTheme.accent, Icons.solar_power_rounded),
+                  ),
+                  child: Text(
+                    pos.elevationDeg <= 0
+                        ? '🌙 Ahora es de noche. Mueve el simulador de hora en Bóveda 3D para probar si el obstáculo (${obstacleAngle.toStringAsFixed(0)}°) bloquea el sol de día.'
+                        : isBlocked
+                            ? '🏢 Sombra Bloqueada: El obstáculo está a ${obstacleAngle.toStringAsFixed(0)}° y supera al sol (${pos.elevationDeg.toStringAsFixed(0)}°). Tendrás sombra en este punto.'
+                            : '☀️ Sol Libre: El sol está a ${pos.elevationDeg.toStringAsFixed(0)}° por encima del obstáculo (${obstacleAngle.toStringAsFixed(0)}°). Disfrutarás sol directo sin bloqueos.',
+                    style: TextStyle(
+                      color: pos.elevationDeg <= 0
+                          ? Colors.white70
+                          : (isBlocked ? Colors.redAccent : AppTheme.success),
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
                     ),
-                  ],
+                  ),
                 ),
-                const SizedBox(height: 14),
+                const SizedBox(height: 12),
                 TextField(
                   controller: _siteNameCtrl,
                   style: const TextStyle(color: Colors.white, fontSize: 13),
                   decoration: const InputDecoration(
-                    labelText: 'Nombre del sitio / Proyecto',
+                    labelText: 'Guardar esta medición con nombre (ej. Balcón Sala)',
                     labelStyle: TextStyle(color: AppTheme.textSecondary, fontSize: 12),
                     prefixIcon: Icon(Icons.bookmark_border_rounded, color: AppTheme.primary, size: 18),
                     isDense: true,
                   ),
                 ),
-                const SizedBox(height: 12),
+                const SizedBox(height: 10),
                 ElevatedButton.icon(
                   onPressed: () async {
                     final study = SolarStudyRecord(
                       id: 'SP-${DateTime.now().millisecondsSinceEpoch % 10000}',
-                      siteName: _siteNameCtrl.text.trim().isEmpty ? 'Proyecto Solar' : _siteNameCtrl.text.trim(),
+                      siteName: _siteNameCtrl.text.trim().isEmpty ? 'Medición Hogar' : _siteNameCtrl.text.trim(),
                       latitude: store.latitude,
                       longitude: store.longitude,
                       dayOfYear: _dayOfYear,
                       solarHour: _solarHour,
                       objectHeightMeters: _objectHeight,
                       elevationDeg: pos.elevationDeg,
-                      azimuthDeg: pos.azimuthDeg,
-                      shadowLengthMeters: pos.shadowLengthMeters,
-                      optimalTiltDeg: pos.optimalPvTiltDeg,
-                      minRowSpacingMeters: pos.minPvRowSpacingMeters,
+                      azimuthDeg: activeWindowAz,
+                      shadowLengthMeters: obstacleAngle,
+                      optimalTiltDeg: windowSun.directSunHours,
+                      minRowSpacingMeters: lux,
                       createdAtIso: DateTime.now().toIso8601String(),
                     );
                     await store.saveStudy(study);
-                    if (context.mounted) {
+                    if (mounted) {
                       ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('Estudio guardado correctamente ✓'), backgroundColor: AppTheme.success),
+                        const SnackBar(content: Text('Medición guardada en Estudios ✓'), backgroundColor: AppTheme.success),
                       );
                     }
                   },
                   icon: const Icon(Icons.save_rounded, color: Colors.black, size: 18),
-                  label: const Text('Guardar Estudio en Historial', style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
+                  label: const Text('Guardar Medición de Hogar / Luz', style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
                   style: ElevatedButton.styleFrom(backgroundColor: AppTheme.primary),
                 ),
               ],
@@ -889,13 +1384,13 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
     );
   }
 
-  // ==========================================
-  // PESTAÑA 4: ESTUDIOS Y REPORTES PDF
-  // ==========================================
+  // =========================================================================
+  // PESTAÑA 4: ESTUDIOS GUARDADOS Y PDF
+  // =========================================================================
   Widget _buildSavedStudiesTab(StorageService store) {
     if (store.studies.isEmpty) {
       return const Center(
-        child: Text('No hay estudios guardados aún.', style: TextStyle(color: AppTheme.textMuted)),
+        child: Text('No hay mediciones guardadas aún.', style: TextStyle(color: AppTheme.textMuted)),
       );
     }
     return ListView.builder(
@@ -930,7 +1425,7 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
                 ),
                 const SizedBox(height: 6),
                 Text(
-                  'Elev: ${item.elevationDeg.toStringAsFixed(1)}° • Azimut: ${item.azimuthDeg.toStringAsFixed(1)}° • Sombra: ${item.shadowLengthMeters.toStringAsFixed(2)}m',
+                  'Elevación Sol: ${item.elevationDeg.toStringAsFixed(1)}° • Azimut: ${item.azimuthDeg.toStringAsFixed(0)}° • Luz: ${item.minRowSpacingMeters.toStringAsFixed(0)} lx',
                   style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary),
                 ),
                 const SizedBox(height: 12),
@@ -959,16 +1454,15 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
     );
   }
 
-  // ==========================================
-  // PESTAÑA 5: AJUSTES & UBICACIÓN
-  // ==========================================
-  Widget _buildSettingsTab(StorageService store) {
+  // =========================================================================
+  // PESTAÑA 5: AJUSTES, GPS & CIUDADES
+  // =========================================================================
+  Widget _buildSettingsTab(StorageService store, WeatherSolarService weather) {
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // Banner Pro
           InkWell(
             onTap: () {
               Navigator.of(context).push(
@@ -1024,10 +1518,15 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
               ),
             ),
           ),
-          const SizedBox(height: 20),
-
-          // Coordenadas
-          const Text('UBICACIÓN GEOGRÁFICA (100% OFFLINE)', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: AppTheme.textSecondary)),
+          const SizedBox(height: 16),
+          ElevatedButton.icon(
+            onPressed: _gpsLoading ? null : () => _fetchRealGpsAndWeather(store),
+            icon: const Icon(Icons.gps_fixed_rounded, color: Colors.black),
+            label: const Text('Detectar Mi Ubicación por GPS & Clima Real', style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
+            style: ElevatedButton.styleFrom(backgroundColor: AppTheme.accent, padding: const EdgeInsets.symmetric(vertical: 14)),
+          ),
+          const SizedBox(height: 18),
+          const Text('COORDENADAS MANUALES / FIRMA', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: AppTheme.textSecondary)),
           const SizedBox(height: 8),
           Container(
             padding: const EdgeInsets.all(14),
@@ -1055,36 +1554,39 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
                 TextField(
                   controller: _inspectorCtrl,
                   style: const TextStyle(color: Colors.white),
-                  decoration: const InputDecoration(labelText: 'Nombre / Profesional en Reportes', isDense: true),
+                  decoration: const InputDecoration(labelText: 'Tu Nombre (para reportes PDF)', isDense: true),
                 ),
                 const SizedBox(height: 14),
                 ElevatedButton(
-                  onPressed: () {
+                  onPressed: () async {
                     final lat = double.tryParse(_latCtrl.text) ?? store.latitude;
                     final lon = double.tryParse(_lonCtrl.text) ?? store.longitude;
-                    store.updateSettings(latitude: lat, longitude: lon, inspectorName: _inspectorCtrl.text);
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Configuración guardada ✓'), backgroundColor: AppTheme.success),
-                    );
+                    await store.updateSettings(latitude: lat, longitude: lon, inspectorName: _inspectorCtrl.text);
+                    await weather.refresh(latitude: lat, longitude: lon);
+                    if (mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('Ubicación y clima actualizados ✓'), backgroundColor: AppTheme.success),
+                      );
+                    }
                   },
                   style: ElevatedButton.styleFrom(backgroundColor: AppTheme.primary),
-                  child: const Text('Guardar Ubicación', style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
+                  child: const Text('Guardar Coordenadas', style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
                 ),
               ],
             ),
           ),
-          const SizedBox(height: 16),
-          // Presets de Ciudades
+          const SizedBox(height: 14),
           Wrap(
             spacing: 8,
             runSpacing: 8,
             children: CityLocationPreset.presets.map((c) {
               return ActionChip(
                 label: Text(c.name, style: const TextStyle(fontSize: 11)),
-                onPressed: () {
+                onPressed: () async {
                   _latCtrl.text = c.latitude.toStringAsFixed(4);
                   _lonCtrl.text = c.longitude.toStringAsFixed(4);
-                  store.updateSettings(latitude: c.latitude, longitude: c.longitude, inspectorName: _inspectorCtrl.text);
+                  await store.updateSettings(latitude: c.latitude, longitude: c.longitude, inspectorName: _inspectorCtrl.text);
+                  await weather.refresh(latitude: c.latitude, longitude: c.longitude);
                 },
               );
             }).toList(),
@@ -1094,7 +1596,9 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
     );
   }
 
-  // Modales y Helpers
+  // =========================================================================
+  // HELPERS Y MODALES
+  // =========================================================================
   Future<void> _openSignAndShareModal(SolarStudyRecord study, StorageService store) async {
     if (store.isTrialExpired) {
       final unlocked = await Navigator.of(context).push<bool>(
@@ -1166,40 +1670,100 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
     );
   }
 
-  Widget _orientationChip(int index, String label, IconData icon) {
-    final isSelected = _selectedRoomOrientation == index;
-    return ChoiceChip(
-      avatar: Icon(icon, size: 16, color: isSelected ? Colors.black : AppTheme.primary),
-      label: Text(label, style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: isSelected ? Colors.black : Colors.white)),
-      selected: isSelected,
-      selectedColor: AppTheme.primary,
-      backgroundColor: AppTheme.darkCard,
-      onSelected: (_) => setState(() => _selectedRoomOrientation = index),
+  Widget _miniChip(IconData icon, String text, Color color) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.14),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: color.withValues(alpha: 0.35)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 13, color: color),
+          const SizedBox(width: 4),
+          Text(text, style: TextStyle(color: color, fontSize: 11, fontWeight: FontWeight.bold)),
+        ],
+      ),
     );
   }
 
-  String _getRoomLightAdvice(int index) {
-    switch (index) {
-      case 0:
-        return '☀️ Ventana al Este: Luz suave y fresca al amanecer. Ideal para dormitorios o cocinas; la habitación se mantendrá fresca por la tarde.';
-      case 1:
-        return '🔥 Ventana al Sur: Máxima entrada de sol y calor casi todo el día (en hemisferio norte). Muy luminosa en invierno, excelente para salas de estar y plantas.';
-      case 2:
-        return '🌇 Ventana al Oeste: Recibe el sol de la tarde cuando el ambiente ya está caliente. Habitación calurosa en verano pero con hermosas puestas de sol.';
-      default:
-        return '☁️ Ventana al Norte: Luz difusa y constante sin sol directo cegador. Excelente para estudios de trabajo, oficinas o pintura.';
-    }
+  Widget _modeChip(int value, String label, int selected, ValueChanged<int> onTap) {
+    final active = value == selected;
+    return ChoiceChip(
+      label: Text(
+        label,
+        style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: active ? Colors.black : Colors.white),
+      ),
+      selected: active,
+      selectedColor: AppTheme.primary,
+      backgroundColor: const Color(0xFF131D2E),
+      onSelected: (_) => onTap(value),
+    );
   }
 
-  String _getPlantAdvice(int type) {
-    switch (type) {
-      case 0:
-        return '🌵 Suculentas & Cactus: Requieren sol directo 4 a 6 horas diarias. Colócalas junto a ventanas orientadas al Sur o al Este. Evita rincones oscuros.';
-      case 1:
-        return '🌿 Monstera, Ficus & Potos: Prefieren luz brillante pero indirecta. Cerca de una ventana al Este o a 1 metro de una ventana al Sur con cortina ligera.';
-      default:
-        return '🌸 Orquídeas & Helechos: Luz suave filtrada. El sol directo quema sus hojas rápidamente. Ventanas al Norte o baños iluminados son ideales.';
+  Widget _luxDiagnosisBanner(double lux) {
+    String label;
+    Color col;
+    if (lux < 150) {
+      label = '🌑 Sombra Profunda (< 150 lx) • Solo plantas muy resistentes';
+      col = Colors.blueGrey;
+    } else if (lux < 800) {
+      label = '☁️ Luz Interior Suave ($lux lx) • Ideal Orquídeas y Helechos';
+      col = Colors.lightBlueAccent;
+    } else if (lux < 4500) {
+      label = '✨ Luz Brillante Indirecta • Excelente para Monstera y Ficus';
+      col = AppTheme.success;
+    } else {
+      label = '☀️ Sol Directo Intenso • Perfecto para Cactus, Suculentas y Huerto';
+      col = AppTheme.primary;
     }
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: col.withValues(alpha: 0.14),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: col.withValues(alpha: 0.45)),
+      ),
+      child: Text(label, style: TextStyle(color: col, fontSize: 12, fontWeight: FontWeight.bold)),
+    );
+  }
+
+  double _computePlantMatch(double lux, double minIdeal, double maxIdeal) {
+    if (lux >= minIdeal && lux <= maxIdeal) return 1.0;
+    if (lux < minIdeal) return (lux / minIdeal).clamp(0.1, 0.95);
+    return (maxIdeal / lux).clamp(0.25, 0.95);
+  }
+
+  Widget _plantMatchBar(String name, double pct) {
+    final color = pct >= 0.75 ? AppTheme.success : (pct >= 0.45 ? AppTheme.primary : Colors.redAccent);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(name, style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w600)),
+              Text('${(pct * 100).round()}% ideal', style: TextStyle(color: color, fontSize: 11, fontWeight: FontWeight.bold)),
+            ],
+          ),
+          const SizedBox(height: 4),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(4),
+            child: LinearProgressIndicator(
+              value: pct,
+              minHeight: 6,
+              backgroundColor: const Color(0xFF1E293B),
+              color: color,
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   Widget _metricCard(String label, String val, Color c, IconData icon) {
@@ -1219,7 +1783,7 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(label, style: const TextStyle(fontSize: 10, color: AppTheme.textSecondary)),
-                Text(val, style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: c)),
+                Text(val, style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: c), overflow: TextOverflow.ellipsis),
               ],
             ),
           ),
@@ -1247,7 +1811,7 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
             ],
           ),
           const SizedBox(height: 4),
-          Text(val, style: TextStyle(fontSize: 15, fontWeight: FontWeight.w900, color: c)),
+          Text(val, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w900, color: c), overflow: TextOverflow.ellipsis),
         ],
       ),
     );
@@ -1265,7 +1829,9 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
   }
 }
 
-// Painter de la Bóveda Celeste
+// =========================================================================
+// CUSTOM PAINTER 1: BÓVEDA CELESTE 3D + CONO DE VISIÓN EN VIVO
+// =========================================================================
 class _SolarSkyDomePainter extends CustomPainter {
   final SolarPositionResult currentPos;
   final List<SolarPositionResult> dailyArc;
@@ -1285,14 +1851,33 @@ class _SolarSkyDomePainter extends CustomPainter {
     final cy = size.height / 2;
     final maxR = math.min(cx, cy) - 22;
 
-    // Fondo degradado del cielo
     final bgPaint = Paint()
       ..shader = const RadialGradient(
         colors: [Color(0xFF16233B), Color(0xFF0B111E)],
       ).createShader(Rect.fromCircle(center: Offset(cx, cy), radius: maxR));
     canvas.drawCircle(Offset(cx, cy), maxR, bgPaint);
 
-    // Círculos de elevación
+    // Cono de visión hacia arriba (dirección donde apunta el teléfono)
+    if (isLive) {
+      final fovPaint = Paint()
+        ..shader = RadialGradient(
+          colors: [
+            AppTheme.success.withValues(alpha: 0.28),
+            AppTheme.success.withValues(alpha: 0.0),
+          ],
+        ).createShader(Rect.fromCircle(center: Offset(cx, cy), radius: maxR));
+      final fovPath = Path()
+        ..moveTo(cx, cy)
+        ..arcTo(
+          Rect.fromCircle(center: Offset(cx, cy), radius: maxR),
+          -math.pi / 2 - 0.38,
+          0.76,
+          false,
+        )
+        ..close();
+      canvas.drawPath(fovPath, fovPaint);
+    }
+
     final ringPaint = Paint()
       ..color = const Color(0xFF2A3A54)
       ..style = PaintingStyle.stroke
@@ -1301,19 +1886,16 @@ class _SolarSkyDomePainter extends CustomPainter {
     canvas.drawCircle(Offset(cx, cy), maxR * 0.66, ringPaint..strokeWidth = 1..color = const Color(0xFF1E293B));
     canvas.drawCircle(Offset(cx, cy), maxR * 0.33, ringPaint);
 
-    // Cruz de coordenadas
     canvas.drawLine(Offset(cx - maxR, cy), Offset(cx + maxR, cy), ringPaint);
     canvas.drawLine(Offset(cx, cy - maxR), Offset(cx, cy + maxR), ringPaint);
 
-    // Puntos Cardinales rotados con la brújula
     final rotationRad = isLive ? (-compassHeading * math.pi / 180.0) : 0.0;
 
     _drawCardinal(canvas, cx, cy, maxR, rotationRad, 0, 'N', Colors.redAccent, isBold: true);
     _drawCardinal(canvas, cx, cy, maxR, rotationRad, 90, 'E', AppTheme.textSecondary);
     _drawCardinal(canvas, cx, cy, maxR, rotationRad, 180, 'S', AppTheme.textSecondary);
-    _drawCardinal(canvas, cx, cy, maxR, rotationRad, 270, 'W', AppTheme.textSecondary);
+    _drawCardinal(canvas, cx, cy, maxR, rotationRad, 270, 'O', AppTheme.textSecondary);
 
-    // Trayectoria diaria del Sol
     final path = Path();
     bool started = false;
     for (final pt in dailyArc) {
@@ -1328,31 +1910,26 @@ class _SolarSkyDomePainter extends CustomPainter {
       }
     }
 
-    final arcPaint = Paint()
-      ..color = const Color(0xFFF59E0B)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 3.5;
-    canvas.drawPath(path, arcPaint);
+    canvas.drawPath(
+      path,
+      Paint()
+        ..color = const Color(0xFFF59E0B)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 3.5,
+    );
 
-    // Posición del Sol
     final sunElev = currentPos.elevationDeg.clamp(0.0, 90.0);
     final sunPos = _polarToScreen(cx, cy, maxR, currentPos.azimuthDeg, sunElev, rotationRad);
 
-    // Resplandor del Sol
     canvas.drawCircle(sunPos, 20, Paint()..color = const Color(0xFFF59E0B).withValues(alpha: 0.3));
     canvas.drawCircle(sunPos, 10, Paint()..color = const Color(0xFFFBBF24));
-
-    // Rayo al centro
     canvas.drawLine(
       Offset(cx, cy),
       sunPos,
       Paint()
         ..color = const Color(0xFFF59E0B).withValues(alpha: 0.4)
-        ..strokeWidth = 1.5
-        ..style = PaintingStyle.stroke,
+        ..strokeWidth = 1.5,
     );
-
-    // Marcador central
     canvas.drawCircle(Offset(cx, cy), 5, Paint()..color = isLive ? AppTheme.success : AppTheme.primary);
   }
 
@@ -1364,15 +1941,10 @@ class _SolarSkyDomePainter extends CustomPainter {
     final tp = TextPainter(
       text: TextSpan(
         text: label,
-        style: TextStyle(
-          color: color,
-          fontSize: isBold ? 14 : 11,
-          fontWeight: isBold ? FontWeight.w900 : FontWeight.bold,
-        ),
+        style: TextStyle(color: color, fontSize: isBold ? 14 : 11, fontWeight: isBold ? FontWeight.w900 : FontWeight.bold),
       ),
       textDirection: TextDirection.ltr,
     )..layout();
-
     tp.paint(canvas, Offset(pos.dx - tp.width / 2, pos.dy - tp.height / 2));
   }
 
@@ -1384,4 +1956,254 @@ class _SolarSkyDomePainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _SolarSkyDomePainter oldDelegate) => true;
+}
+
+// =========================================================================
+// CUSTOM PAINTER 2: HUD AR SOBRE LA CÁMARA FOTOGRÁFICA
+// =========================================================================
+class _CameraArHudPainter extends CustomPainter {
+  final CameraAlignmentResult alignment;
+  final bool isFrontCamera;
+
+  _CameraArHudPainter({required this.alignment, required this.isFrontCamera});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final cx = size.width / 2;
+    final cy = size.height / 2;
+
+    // Mira central
+    final reticleColor = alignment.isAligned ? AppTheme.success : Colors.white.withValues(alpha: 0.6);
+    final reticlePaint = Paint()
+      ..color = reticleColor
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = alignment.isAligned ? 2.8 : 1.5;
+    canvas.drawCircle(Offset(cx, cy), 34, reticlePaint);
+    canvas.drawLine(Offset(cx - 46, cy), Offset(cx - 22, cy), reticlePaint);
+    canvas.drawLine(Offset(cx + 22, cy), Offset(cx + 46, cy), reticlePaint);
+    canvas.drawLine(Offset(cx, cy - 46), Offset(cx, cy - 22), reticlePaint);
+    canvas.drawLine(Offset(cx, cy + 22), Offset(cx, cy + 46), reticlePaint);
+
+    // Posición del objetivo en el visor según deltaAzimuth y deltaElevation
+    final dx = (alignment.deltaAzimuth / 60.0).clamp(-1.0, 1.0) * (size.width * 0.38);
+    final dy = -(alignment.deltaElevation / 45.0).clamp(-1.0, 1.0) * (size.height * 0.34);
+    final targetOffset = Offset(cx + dx, cy + dy);
+
+    // Línea guía hacia el punto ideal
+    if (!alignment.isAligned) {
+      canvas.drawLine(
+        Offset(cx, cy),
+        targetOffset,
+        Paint()
+          ..color = AppTheme.primary.withValues(alpha: 0.75)
+          ..strokeWidth = 2.0,
+      );
+    }
+
+    // Esfera Objetivo (Sol / Dirección ideal de cámara)
+    canvas.drawCircle(
+      targetOffset,
+      24,
+      Paint()..color = (alignment.isAligned ? AppTheme.success : AppTheme.primary).withValues(alpha: 0.25),
+    );
+    canvas.drawCircle(
+      targetOffset,
+      11,
+      Paint()..color = alignment.isAligned ? AppTheme.success : AppTheme.primary,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _CameraArHudPainter oldDelegate) => true;
+}
+
+// =========================================================================
+// CUSTOM PAINTER 3: RADAR GRÁFICO DE ESTACIONAMIENTO A LA SOMBRA
+// =========================================================================
+class _ParkingShadowRadarPainter extends CustomPainter {
+  final double deviceHeading;
+  final double currentSunAzimuth;
+  final double latitude;
+  final double stayHours;
+  final double solarHour;
+  final int dayOfYear;
+  final bool isLive;
+
+  _ParkingShadowRadarPainter({
+    required this.deviceHeading,
+    required this.currentSunAzimuth,
+    required this.latitude,
+    required this.stayHours,
+    required this.solarHour,
+    required this.dayOfYear,
+    required this.isLive,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final cx = size.width / 2;
+    final cy = size.height / 2;
+    final maxR = math.min(cx, cy) - 16;
+    final rot = isLive ? (-deviceHeading * math.pi / 180.0) : 0.0;
+
+    // Fondo radar
+    canvas.drawCircle(Offset(cx, cy), maxR, Paint()..color = const Color(0xFF0E1726));
+    canvas.drawCircle(
+      Offset(cx, cy),
+      maxR,
+      Paint()
+        ..color = const Color(0xFF243046)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2,
+    );
+
+    // Abanico de sombra durante las próximas [stayHours] horas
+    final futureAzEnd = SolarCalculator.calculate(
+      latitude: latitude,
+      longitude: 0,
+      dayOfYear: dayOfYear,
+      solarHour: (solarHour + stayHours).clamp(0.0, 23.9),
+    ).azimuthDeg;
+
+    final startShadowAz = (currentSunAzimuth + 180.0) % 360.0;
+    final endShadowAz = (futureAzEnd + 180.0) % 360.0;
+    final startAngleRad = (startShadowAz - 90.0) * math.pi / 180.0 + rot;
+    double sweepRad = ((endShadowAz - startShadowAz + 540.0) % 360.0 - 180.0) * math.pi / 180.0;
+    if (sweepRad.abs() < 0.35) sweepRad = 0.45;
+
+    final shadowPath = Path()
+      ..moveTo(cx, cy)
+      ..arcTo(Rect.fromCircle(center: Offset(cx, cy), radius: maxR * 0.88), startAngleRad, sweepRad, false)
+      ..close();
+    canvas.drawPath(shadowPath, Paint()..color = AppTheme.success.withValues(alpha: 0.25));
+
+    // Flecha Naranja hacia el Oeste / Sol de tarde (270°)
+    final westRad = (270.0 - 90.0) * math.pi / 180.0 + rot;
+    final westPt = Offset(cx + (maxR - 14) * math.cos(westRad), cy + (maxR - 14) * math.sin(westRad));
+    canvas.drawLine(Offset(cx, cy), westPt, Paint()..color = Colors.orangeAccent..strokeWidth = 3);
+    canvas.drawCircle(westPt, 8, Paint()..color = Colors.orangeAccent);
+    _paintTag(canvas, westPt, 'OESTE / SOL', Colors.orangeAccent);
+
+    // Zona y Flecha Verde "APARCA AQUÍ" en lado opuesto (Este / Sombra)
+    final safeRad = startAngleRad + sweepRad / 2;
+    final safePt = Offset(cx + (maxR * 0.65) * math.cos(safeRad), cy + (maxR * 0.65) * math.sin(safeRad));
+    canvas.drawLine(Offset(cx, cy), safePt, Paint()..color = AppTheme.success..strokeWidth = 3.5);
+    canvas.drawCircle(safePt, 10, Paint()..color = AppTheme.success);
+    _paintTag(canvas, safePt, 'APARCA AQUÍ', AppTheme.success);
+
+    // Edificio / Árbol central
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(Rect.fromCenter(center: Offset(cx, cy), width: 28, height: 28), const Radius.circular(6)),
+      Paint()..color = const Color(0xFF334155),
+    );
+    _paintTag(canvas, Offset(cx, cy + 20), 'Edificio/Árbol', Colors.white70);
+  }
+
+  void _paintTag(Canvas canvas, Offset pt, String label, Color c) {
+    final tp = TextPainter(
+      text: TextSpan(text: label, style: TextStyle(color: c, fontSize: 10, fontWeight: FontWeight.w900)),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    tp.paint(canvas, Offset(pt.dx - tp.width / 2, pt.dy - tp.height - 10));
+  }
+
+  @override
+  bool shouldRepaint(covariant _ParkingShadowRadarPainter oldDelegate) => true;
+}
+
+// =========================================================================
+// CUSTOM PAINTER 4: ESCÁNER DE VENTANAS EN VIVO
+// =========================================================================
+class _WindowSunScannerPainter extends CustomPainter {
+  final double windowAzimuth;
+  final List<SolarPositionResult> dailyArc;
+
+  _WindowSunScannerPainter({required this.windowAzimuth, required this.dailyArc});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final cx = size.width / 2;
+    final cy = size.height / 2 + 12;
+    final radius = math.min(cx, cy) - 18;
+
+    // Habitación (parte inferior)
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(Rect.fromLTWH(cx - 75, cy, 150, 48), const Radius.circular(8)),
+      Paint()..color = const Color(0xFF1E293B),
+    );
+    // Ventana brillante arriba
+    canvas.drawLine(
+      Offset(cx - 42, cy),
+      Offset(cx + 42, cy),
+      Paint()..color = Colors.lightBlueAccent..strokeWidth = 5,
+    );
+
+    // Rayos de sol que entran por esa ventana hoy
+    for (final pt in dailyArc) {
+      if (pt.elevationDeg > 5.0) {
+        final diff = ((pt.azimuthDeg - windowAzimuth + 540.0) % 360.0 - 180.0);
+        if (diff.abs() <= 72.0) {
+          final rad = -math.pi / 2 + (diff * math.pi / 180.0);
+          final sunPt = Offset(cx + radius * math.cos(rad), cy + radius * math.sin(rad));
+          canvas.drawLine(
+            sunPt,
+            Offset(cx, cy),
+            Paint()..color = AppTheme.primary.withValues(alpha: 0.35)..strokeWidth = 2,
+          );
+          canvas.drawCircle(sunPt, 4, Paint()..color = AppTheme.primary);
+        }
+      }
+    }
+
+    final tp = TextPainter(
+      text: const TextSpan(text: 'HABITACIÓN / INTERIOR', style: TextStyle(color: Colors.white60, fontSize: 10, fontWeight: FontWeight.bold)),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    tp.paint(canvas, Offset(cx - tp.width / 2, cy + 16));
+  }
+
+  @override
+  bool shouldRepaint(covariant _WindowSunScannerPainter oldDelegate) => true;
+}
+
+// =========================================================================
+// CUSTOM PAINTER 5: CLINÓMETRO DE OBSTÁCULOS VS ALTURA DEL SOL
+// =========================================================================
+class _ObstacleClinometerPainter extends CustomPainter {
+  final double obstacleAngleDeg;
+  final double sunElevationDeg;
+
+  _ObstacleClinometerPainter({required this.obstacleAngleDeg, required this.sunElevationDeg});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final origin = Offset(24, size.height - 20);
+    final maxLen = size.width - 56;
+
+    // Suelo
+    canvas.drawLine(origin, Offset(size.width - 16, origin.dy), Paint()..color = Colors.white24..strokeWidth = 2);
+
+    // Edificio / Árbol obstáculo
+    final obsRad = obstacleAngleDeg * math.pi / 180.0;
+    final obsTopX = origin.dx + maxLen * 0.55;
+    final obsHeight = (maxLen * 0.55) * math.tan(obsRad.clamp(0.0, 1.35));
+    final obsTopY = (origin.dy - obsHeight).clamp(12.0, origin.dy);
+
+    canvas.drawRect(
+      Rect.fromLTRB(obsTopX - 18, obsTopY, obsTopX + 18, origin.dy),
+      Paint()..color = const Color(0xFF334155),
+    );
+    canvas.drawLine(origin, Offset(obsTopX, obsTopY), Paint()..color = Colors.redAccent..strokeWidth = 2);
+
+    // Rayo del Sol
+    final sunRad = sunElevationDeg * math.pi / 180.0;
+    final sunX = origin.dx + maxLen * 0.85;
+    final sunY = (origin.dy - (maxLen * 0.85) * math.tan(sunRad.clamp(0.0, 1.35))).clamp(12.0, origin.dy);
+
+    canvas.drawLine(origin, Offset(sunX, sunY), Paint()..color = AppTheme.primary..strokeWidth = 2.5);
+    canvas.drawCircle(Offset(sunX, sunY), 10, Paint()..color = AppTheme.primary);
+  }
+
+  @override
+  bool shouldRepaint(covariant _ObstacleClinometerPainter oldDelegate) => true;
 }

@@ -216,9 +216,174 @@ class SolarCalculator {
     return pts;
   }
 
+  /// Evaluates direct sunlight hours entering a window facing [windowAzimuth] (0-360 deg).
+  static WindowSunlightResult calculateWindowSunlight({
+    required double windowAzimuth,
+    required List<SolarPositionResult> dailyArc,
+  }) {
+    double hours = 0.0;
+    String? firstSun;
+    String? lastSun;
+
+    for (int i = 0; i < dailyArc.length; i++) {
+      final pt = dailyArc[i];
+      if (pt.elevationDeg > 5.0) {
+        final diff = _angularDiff(pt.azimuthDeg, windowAzimuth).abs();
+        if (diff <= 72.0) {
+          hours += 0.5;
+          final hourVal = 5.0 + i * 0.5;
+          final formatted = _formatHour(hourVal);
+          firstSun ??= formatted;
+          lastSun = formatted;
+        }
+      }
+    }
+
+    String thermalVerdict;
+    String bestRoomUse;
+    if (windowAzimuth >= 45 && windowAzimuth <= 135) {
+      thermalVerdict = 'Sol de Mañana • Habitación Fresca por la Tarde';
+      bestRoomUse = 'Ideal para dormitorios, cocina y desayuno con luz suave.';
+    } else if (windowAzimuth > 135 && windowAzimuth < 225) {
+      thermalVerdict = 'Sol de Mediodía / Máxima Luminosidad';
+      bestRoomUse = 'Excelente para sala, balcón, terraza o secado rápido.';
+    } else if (windowAzimuth >= 225 && windowAzimuth <= 315) {
+      thermalVerdict = 'Sol Intenso de Tarde • Ambiente Cálido';
+      bestRoomUse = 'Perfecto para ver atardeceres; en verano conviene cortina térmica.';
+    } else {
+      thermalVerdict = 'Luz Natural Difusa Constante (Sin Sol Directo)';
+      bestRoomUse = 'Ideal para oficina en casa, estudio o pintar sin reflejos.';
+    }
+
+    return WindowSunlightResult(
+      windowAzimuth: windowAzimuth,
+      directSunHours: hours,
+      firstSunTime: firstSun ?? '--:--',
+      lastSunTime: lastSun ?? '--:--',
+      thermalVerdict: thermalVerdict,
+      bestRoomUse: bestRoomUse,
+    );
+  }
+
+  /// Calculates camera alignment against the sun for back/front cameras and 4 photography modes:
+  /// 0 = Selfie / Retrato Luz Dorada (sun in front of person -> back cam faces away from sun, front cam faces sun)
+  /// 1 = Contraluz / Halo Solar (sun behind person -> back cam faces sun, front cam faces away)
+  /// 2 = Capturar el Sol / Atardecer (point active lens directly toward sun)
+  /// 3 = Luz Cine 45° (45 deg side light for dramatic portrait)
+  static CameraAlignmentResult calculateCameraAlignment({
+    required double sunAzimuth,
+    required double sunElevation,
+    required double deviceAzimuth,
+    required double cameraElevation,
+    required bool isFrontCamera,
+    required int photoMode,
+  }) {
+    // Desired sun azimuth relative to the active camera lens direction
+    double targetDeviceAzimuth;
+    double targetCamElevation;
+
+    final effectiveSunEl = sunElevation.clamp(3.0, 75.0);
+
+    switch (photoMode) {
+      case 0: // Luz Dorada en el rostro (para retratos con luz cálida)
+        // Si usas cámara trasera, el fotógrafo da la espalda al sol para iluminar al modelo
+        // Si usas cámara frontal (selfie), tu rostro mira hacia la pantalla -> el sol debe quedar detrás de la pantalla (frente a tu rostro) = hacia deviceAzimuth
+        targetDeviceAzimuth = isFrontCamera ? sunAzimuth : (sunAzimuth + 180.0) % 360.0;
+        targetCamElevation = isFrontCamera ? (effectiveSunEl * 0.45).clamp(0.0, 30.0) : 5.0;
+        break;
+      case 1: // Contraluz / Halo en cabello
+        targetDeviceAzimuth = isFrontCamera ? (sunAzimuth + 180.0) % 360.0 : sunAzimuth;
+        targetCamElevation = (effectiveSunEl * 0.7).clamp(0.0, 45.0);
+        break;
+      case 2: // Capturar el Sol / Paisaje directo
+        targetDeviceAzimuth = isFrontCamera ? (sunAzimuth + 180.0) % 360.0 : sunAzimuth;
+        targetCamElevation = effectiveSunEl;
+        break;
+      default: // Luz Cine Lateral 45°
+        final baseAz = isFrontCamera ? sunAzimuth : (sunAzimuth + 180.0) % 360.0;
+        targetDeviceAzimuth = (baseAz + 45.0) % 360.0;
+        targetCamElevation = 8.0;
+        break;
+    }
+
+    // Signed difference: positive means turn right (clockwise), negative means turn left
+    final deltaAz = _angularDiff(targetDeviceAzimuth, deviceAzimuth);
+    final deltaEl = targetCamElevation - cameraElevation;
+
+    final azPenalty = (deltaAz.abs() / 90.0).clamp(0.0, 1.0);
+    final elPenalty = (deltaEl.abs() / 45.0).clamp(0.0, 1.0);
+    final score = ((1.0 - (azPenalty * 0.7 + elPenalty * 0.3)) * 100.0).round().clamp(0, 100);
+    final isAligned = deltaAz.abs() <= 12.0 && deltaEl.abs() <= 14.0;
+
+    String instruction;
+    if (isAligned) {
+      instruction = '¡POSICIÓN PERFECTA! Toma la foto ahora';
+    } else if (deltaAz.abs() > 12.0) {
+      final dir = deltaAz > 0 ? 'a la derecha' : 'a la izquierda';
+      instruction = 'Gira ${deltaAz.abs().round()}° $dir';
+    } else {
+      final pitchDir = deltaEl > 0 ? 'Sube' : 'Baja';
+      instruction = '$pitchDir el teléfono ${deltaEl.abs().round()}°';
+    }
+
+    return CameraAlignmentResult(
+      targetAzimuth: targetDeviceAzimuth,
+      targetElevation: targetCamElevation,
+      deltaAzimuth: deltaAz,
+      deltaElevation: deltaEl,
+      alignmentScore: score,
+      isAligned: isAligned,
+      instructionText: instruction,
+    );
+  }
+
+  /// Shortest signed angle (target - current) in range [-180, 180]
+  static double _angularDiff(double target, double current) {
+    double diff = (target - current + 540.0) % 360.0 - 180.0;
+    return diff;
+  }
+
   static String _formatHour(double h) {
     final hrs = h.floor();
     final mins = ((h - hrs) * 60).round().clamp(0, 59);
     return '${hrs.toString().padLeft(2, '0')}:${mins.toString().padLeft(2, '0')}';
   }
+}
+
+class WindowSunlightResult {
+  final double windowAzimuth;
+  final double directSunHours;
+  final String firstSunTime;
+  final String lastSunTime;
+  final String thermalVerdict;
+  final String bestRoomUse;
+
+  const WindowSunlightResult({
+    required this.windowAzimuth,
+    required this.directSunHours,
+    required this.firstSunTime,
+    required this.lastSunTime,
+    required this.thermalVerdict,
+    required this.bestRoomUse,
+  });
+}
+
+class CameraAlignmentResult {
+  final double targetAzimuth;
+  final double targetElevation;
+  final double deltaAzimuth;
+  final double deltaElevation;
+  final int alignmentScore;
+  final bool isAligned;
+  final String instructionText;
+
+  const CameraAlignmentResult({
+    required this.targetAzimuth,
+    required this.targetElevation,
+    required this.deltaAzimuth,
+    required this.deltaElevation,
+    required this.alignmentScore,
+    required this.isAligned,
+    required this.instructionText,
+  });
 }
