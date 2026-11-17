@@ -1,4 +1,3 @@
-import 'paywall_screen.dart';
 import 'dart:convert';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
@@ -8,6 +7,7 @@ import '../services/pdf_report_service.dart';
 import '../services/sensor_service.dart';
 import '../services/storage_service.dart';
 import '../theme/app_theme.dart';
+import 'paywall_screen.dart';
 
 class HomeNavigationScreen extends StatefulWidget {
   final int initialIndex;
@@ -23,15 +23,25 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
   int _dayOfYear = 172;
   double _objectHeight = 3.0;
   final TextEditingController _siteNameCtrl =
-      TextEditingController(text: 'Estudio Fotovoltaico & Sombra');
+      TextEditingController(text: 'Mi Proyecto Solar & Hogar');
   late TextEditingController _latCtrl;
   late TextEditingController _lonCtrl;
   late TextEditingController _inspectorCtrl;
+
+  // Cuidado de Plantas Interactivo
+  int _selectedPlantType = 0; // 0 = Suculentas/Cactus, 1 = Monstera/Ficus, 2 = Orquídeas/Helechos
+  // Detector de Luz de Vivienda
+  int _selectedRoomOrientation = 0; // 0 = Ventana Este, 1 = Ventana Sur, 2 = Ventana Oeste, 3 = Ventana Norte
 
   @override
   void initState() {
     super.initState();
     _currentIndex = widget.initialIndex;
+    final now = DateTime.now();
+    _dayOfYear = int.parse(
+        ((now.difference(DateTime(now.year, 1, 1)).inDays) + 1).toString());
+    _solarHour = (now.hour + (now.minute / 60.0)).clamp(0.0, 24.0);
+
     final store = StorageService.instance;
     _latCtrl = TextEditingController(text: store.latitude.toStringAsFixed(4));
     _lonCtrl = TextEditingController(text: store.longitude.toStringAsFixed(4));
@@ -55,7 +65,6 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
       builder: (context, _) {
         final store = StorageService.instance;
         final sensor = SensorService.instance;
-        final s = store.strings;
 
         final pos = SolarCalculator.calculate(
           latitude: store.latitude,
@@ -77,17 +86,20 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
             title: Row(
               children: [
                 const Icon(Icons.wb_sunny_rounded,
-                    color: AppTheme.primary, size: 22),
-                const SizedBox(width: 8),
+                    color: AppTheme.primary, size: 24),
+                const SizedBox(width: 10),
                 Expanded(
                   child: Text(
                     _currentIndex == 0
-                        ? s.solarDomeTitle
+                        ? '☀️ Brújula & Bóveda Solar'
                         : _currentIndex == 1
-                            ? s.shadowCalcTitle
+                            ? '📸 Fotos, UV & Vitamina D'
                             : _currentIndex == 2
-                                ? s.savedStudiesTitle
-                                : s.settingsTitle,
+                                ? '🏡 Casas, Plantas & Sombras'
+                                : _currentIndex == 3
+                                    ? '📁 Reportes & Estudios'
+                                    : '⚙️ Ajustes',
+                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 17),
                     overflow: TextOverflow.ellipsis,
                   ),
                 ),
@@ -107,7 +119,7 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
                         : AppTheme.primary,
                   ),
                   label: Text(
-                    sensor.useLiveSensors ? s.liveCompassMode : s.manualSimMode,
+                    sensor.useLiveSensors ? 'BRÚJULA EN VIVO' : 'SIMULADOR',
                     style: const TextStyle(
                         fontSize: 11, fontWeight: FontWeight.w700),
                   ),
@@ -184,7 +196,8 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
                   index: _currentIndex,
                   children: [
                     _buildSolarDomeTab(pos, arcPoints, store, sensor),
-                    _buildShadowAndPvTab(pos, store),
+                    _buildLifestylePhotoHealthTab(pos, store),
+                    _buildHomeAndPlantsTab(pos, store),
                     _buildSavedStudiesTab(store),
                     _buildSettingsTab(store),
                   ],
@@ -197,30 +210,31 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
             indicatorColor: AppTheme.primary.withValues(alpha: 0.2),
             selectedIndex: _currentIndex,
             onDestinationSelected: (idx) => setState(() => _currentIndex = idx),
-            destinations: [
+            destinations: const [
               NavigationDestination(
-                icon: const Icon(Icons.wb_twilight_rounded),
-                selectedIcon: const Icon(Icons.wb_twilight_rounded,
-                    color: AppTheme.primary),
-                label: s.navDome,
+                icon: Icon(Icons.wb_twilight_rounded),
+                selectedIcon: Icon(Icons.wb_twilight_rounded, color: AppTheme.primary),
+                label: 'Bóveda 3D',
               ),
               NavigationDestination(
-                icon: const Icon(Icons.solar_power_outlined),
-                selectedIcon:
-                    const Icon(Icons.solar_power_rounded, color: AppTheme.primary),
-                label: s.navShadows,
+                icon: Icon(Icons.camera_alt_outlined),
+                selectedIcon: Icon(Icons.camera_alt_rounded, color: AppTheme.primary),
+                label: 'Fotos & UV',
               ),
               NavigationDestination(
-                icon: const Icon(Icons.folder_copy_outlined),
-                selectedIcon:
-                    const Icon(Icons.folder_rounded, color: AppTheme.primary),
-                label: s.navSaved,
+                icon: Icon(Icons.home_work_outlined),
+                selectedIcon: Icon(Icons.home_work_rounded, color: AppTheme.primary),
+                label: 'Hogar & Sol',
               ),
               NavigationDestination(
-                icon: const Icon(Icons.settings_outlined),
-                selectedIcon:
-                    const Icon(Icons.settings_rounded, color: AppTheme.primary),
-                label: s.navSettings,
+                icon: Icon(Icons.folder_copy_outlined),
+                selectedIcon: Icon(Icons.folder_rounded, color: AppTheme.primary),
+                label: 'Estudios',
+              ),
+              NavigationDestination(
+                icon: Icon(Icons.settings_outlined),
+                selectedIcon: Icon(Icons.settings_rounded, color: AppTheme.primary),
+                label: 'Ajustes',
               ),
             ],
           ),
@@ -229,19 +243,88 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
     );
   }
 
+  // ==========================================
+  // PESTAÑA 1: BÓVEDA 3D Y BRÚJULA EN VIVO
+  // ==========================================
   Widget _buildSolarDomeTab(
     SolarPositionResult pos,
     List<SolarPositionResult> arc,
     StorageService store,
     SensorService sensor,
   ) {
-    final s = store.strings;
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // 3D Solar Sky Dome & AR Compass Canvas
+          // Banner de Estado Dinámico del Sol
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              gradient: const LinearGradient(
+                colors: [Color(0xFF1E293B), Color(0xFF0F172A)],
+              ),
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: AppTheme.primary.withValues(alpha: 0.4)),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.wb_sunny_rounded, color: AppTheme.primary, size: 28),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        pos.sunStatusDescription,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 13,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        'Amanece: ${pos.sunriseTime} • Cenit: ${pos.solarNoonTime} • Ocaso: ${pos.sunsetTime}',
+                        style: const TextStyle(color: AppTheme.textSecondary, fontSize: 11),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+
+          // Indicador de Brújula en Vivo
+          if (sensor.useLiveSensors)
+            Container(
+              margin: const EdgeInsets.only(bottom: 12),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+              decoration: BoxDecoration(
+                color: const Color(0xFF0F231D),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: AppTheme.success.withValues(alpha: 0.4)),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.compass_calibration_rounded, color: AppTheme.success, size: 18),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Brújula en vivo: ${sensor.compassAzimuth.toStringAsFixed(0)}° (${_getCardinalLabel(sensor.compassAzimuth)}) • Inclinación: ${sensor.devicePitch.toStringAsFixed(0)}°',
+                      style: const TextStyle(
+                        color: AppTheme.success,
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+          // Lienzo de la Bóveda Celeste
           Container(
             height: 290,
             padding: const EdgeInsets.all(12),
@@ -262,40 +345,12 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
           ),
           const SizedBox(height: 14),
 
-          // Live Sensor Status Banner
-          if (sensor.useLiveSensors)
-            Container(
-              margin: const EdgeInsets.only(bottom: 12),
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-              decoration: BoxDecoration(
-                color: const Color(0xFF0F231D),
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: AppTheme.success.withValues(alpha: 0.4)),
-              ),
-              child: Row(
-                children: [
-                  const Icon(Icons.compass_calibration_rounded, color: AppTheme.success, size: 18),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      'Brújula en vivo: ' + sensor.compassAzimuth.toStringAsFixed(0) + '° (' + _getCardinalLabel(sensor.compassAzimuth) + ') • Inclinación: ' + sensor.devicePitch.toStringAsFixed(0) + '°',
-                      style: const TextStyle(
-                        color: AppTheme.success,
-                        fontSize: 12,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-
-          // Live Elevation & Azimuth KPI Row
+          // KPIs Clave
           Row(
             children: [
               Expanded(
                 child: _metricCard(
-                  s.solarElevation,
+                  'Elevación Solar',
                   '${pos.elevationDeg.toStringAsFixed(1)}°',
                   pos.elevationDeg > 0 ? AppTheme.primary : AppTheme.accent,
                   Icons.height_rounded,
@@ -304,8 +359,8 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
               const SizedBox(width: 10),
               Expanded(
                 child: _metricCard(
-                  s.solarAzimuth,
-                  '${pos.azimuthDeg.toStringAsFixed(1)}°',
+                  'Orientación (Azimut)',
+                  '${pos.azimuthDeg.toStringAsFixed(1)}° (${_getCardinalLabel(pos.azimuthDeg)})',
                   AppTheme.accent,
                   Icons.explore_rounded,
                 ),
@@ -314,7 +369,7 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
           ),
           const SizedBox(height: 12),
 
-          // Sliders Card (Hour of Day & Day of Year)
+          // Controles de Simulación (Hora y Fecha)
           Container(
             padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
@@ -328,71 +383,69 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    Text(
-                      s.hourOfDayLabel,
-                      style: const TextStyle(
-                        fontWeight: FontWeight.w700,
-                        color: AppTheme.textSecondary,
-                      ),
+                    const Text(
+                      'Hora del Día (Simulación Solar)',
+                      style: TextStyle(fontWeight: FontWeight.w700, color: AppTheme.textSecondary),
                     ),
                     Text(
                       '${_solarHour.floor().toString().padLeft(2, '0')}:${((_solarHour % 1) * 60).round().toString().padLeft(2, '0')} h',
-                      style: const TextStyle(
-                        fontWeight: FontWeight.w800,
-                        fontSize: 16,
-                        color: AppTheme.primary,
-                      ),
+                      style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 16, color: AppTheme.primary),
                     ),
                   ],
                 ),
                 Slider(
                   value: _solarHour,
-                  min: 5.0,
-                  max: 21.0,
-                  divisions: 64,
+                  min: 0.0,
+                  max: 23.99,
                   activeColor: AppTheme.primary,
+                  inactiveColor: AppTheme.darkBorder,
                   onChanged: (v) => setState(() => _solarHour = v),
                 ),
-                const SizedBox(height: 6),
+                const SizedBox(height: 10),
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    Text(
-                      s.dayOfYearLabel,
-                      style: const TextStyle(
-                        fontWeight: FontWeight.w700,
-                        color: AppTheme.textSecondary,
-                      ),
+                    const Text(
+                      'Día del Año (Estaciones)',
+                      style: TextStyle(fontWeight: FontWeight.w700, color: AppTheme.textSecondary),
                     ),
                     Text(
-                      'Día #$_dayOfYear (δ ${pos.declinationDeg.toStringAsFixed(1)}°)',
-                      style: const TextStyle(
-                        fontWeight: FontWeight.w700,
-                        color: AppTheme.accent,
-                      ),
+                      'Día $_dayOfYear / 365',
+                      style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 15, color: AppTheme.accent),
                     ),
                   ],
                 ),
                 Slider(
                   value: _dayOfYear.toDouble(),
-                  min: 1,
-                  max: 365,
+                  min: 1.0,
+                  max: 365.0,
                   activeColor: AppTheme.accent,
+                  inactiveColor: AppTheme.darkBorder,
                   onChanged: (v) => setState(() => _dayOfYear = v.round()),
                 ),
                 Wrap(
                   spacing: 8,
                   children: [
                     ActionChip(
-                      label: Text(s.presetSummerSolstice),
+                      label: const Text('Hoy', style: TextStyle(fontSize: 11)),
+                      onPressed: () {
+                        final n = DateTime.now();
+                        setState(() {
+                          _dayOfYear = n.difference(DateTime(n.year, 1, 1)).inDays + 1;
+                          _solarHour = (n.hour + (n.minute / 60.0)).clamp(0.0, 24.0);
+                        });
+                      },
+                    ),
+                    ActionChip(
+                      label: const Text('Solsticio Verano', style: TextStyle(fontSize: 11)),
                       onPressed: () => setState(() => _dayOfYear = 172),
                     ),
                     ActionChip(
-                      label: Text(s.presetEquinox),
+                      label: const Text('Equinoccio', style: TextStyle(fontSize: 11)),
                       onPressed: () => setState(() => _dayOfYear = 80),
                     ),
                     ActionChip(
-                      label: Text(s.presetWinterSolstice),
+                      label: const Text('Solsticio Invierno', style: TextStyle(fontSize: 11)),
                       onPressed: () => setState(() => _dayOfYear = 355),
                     ),
                   ],
@@ -400,37 +453,204 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
               ],
             ),
           ),
-          const SizedBox(height: 12),
-
-          // Ephemeris Grid
-          GridView.count(
-            crossAxisCount: 2,
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            mainAxisSpacing: 10,
-            crossAxisSpacing: 10,
-            childAspectRatio: 2.2,
-            children: [
-              _miniStat(s.sunriseLabel, pos.sunriseTime, Icons.wb_twilight),
-              _miniStat(s.sunsetLabel, pos.sunsetTime, Icons.nights_stay_rounded),
-              _miniStat(
-                  s.goldenHourLabel, pos.goldenHourEvening, Icons.camera_alt_rounded),
-              _miniStat(s.moonPhaseLabel,
-                  '${pos.moonIlluminationPercent.toStringAsFixed(0)}%', Icons.brightness_3),
-            ],
-          ),
         ],
       ),
     );
   }
 
-  Widget _buildShadowAndPvTab(SolarPositionResult pos, StorageService store) {
-    final s = store.strings;
+  // ==========================================
+  // PESTAÑA 2: FOTOGRAFÍA, UV & VITAMINA D
+  // ==========================================
+  Widget _buildLifestylePhotoHealthTab(SolarPositionResult pos, StorageService store) {
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          // Tarjeta Golden Hour / Blue Hour
+          Container(
+            padding: const EdgeInsets.all(18),
+            decoration: BoxDecoration(
+              gradient: const LinearGradient(
+                colors: [Color(0xFFB45309), Color(0xFFD97706)],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+              borderRadius: BorderRadius.circular(18),
+              boxShadow: [
+                BoxShadow(
+                  color: const Color(0xFFD97706).withValues(alpha: 0.3),
+                  blurRadius: 16,
+                  offset: const Offset(0, 6),
+                ),
+              ],
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Row(
+                  children: [
+                    Icon(Icons.camera_rounded, color: Colors.white, size: 24),
+                    SizedBox(width: 8),
+                    Text(
+                      'FOTOGRAFÍA & REDES SOCIALES',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w900,
+                        fontSize: 14,
+                        letterSpacing: 1.0,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                const Text(
+                  'Golden Hour (Hora Dorada de la Tarde)',
+                  style: TextStyle(color: Colors.white70, fontSize: 12),
+                ),
+                Text(
+                  pos.goldenHourEvening,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 24,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Row(
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text('🌅 Mañana (Amanecer)', style: TextStyle(color: Colors.white70, fontSize: 11)),
+                          Text(pos.goldenHourMorning, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13)),
+                        ],
+                      ),
+                    ),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text('🌌 Hora Azul (Crepúsculo)', style: TextStyle(color: Colors.white70, fontSize: 11)),
+                          Text(pos.blueHourEvening, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13)),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.25),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.tips_and_updates_rounded, color: Colors.amberAccent, size: 16),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          'Apunta tu cámara a ${pos.azimuthDeg.toStringAsFixed(0)}° (${_getCardinalLabel(pos.azimuthDeg)}) para fotos cálidas y siluetas.',
+                          style: const TextStyle(color: Colors.white, fontSize: 11),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
+
+          // Tarjeta de Salud: Vitamina D y Exposición UV
+          Container(
+            padding: const EdgeInsets.all(18),
+            decoration: BoxDecoration(
+              color: AppTheme.darkCard,
+              borderRadius: BorderRadius.circular(18),
+              border: Border.all(color: AppTheme.darkBorder),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: pos.isVitaminDOptimal ? AppTheme.success.withValues(alpha: 0.2) : Colors.amber.withValues(alpha: 0.2),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Icon(
+                        pos.isVitaminDOptimal ? Icons.health_and_safety_rounded : Icons.wb_sunny_outlined,
+                        color: pos.isVitaminDOptimal ? AppTheme.success : Colors.amber,
+                        size: 24,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            'SALUD & VITAMINA D',
+                            style: TextStyle(
+                              color: AppTheme.textSecondary,
+                              fontSize: 11,
+                              fontWeight: FontWeight.bold,
+                              letterSpacing: 0.8,
+                            ),
+                          ),
+                          Text(
+                            pos.isVitaminDOptimal ? 'Ventana Óptima Activa ✓' : 'Sol Bajo para Vitamina D',
+                            style: TextStyle(
+                              color: pos.isVitaminDOptimal ? AppTheme.success : Colors.white,
+                              fontSize: 16,
+                              fontWeight: FontWeight.w900,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    Expanded(
+                      child: _healthMiniCard(
+                        'Índice UV Estimado',
+                        '${pos.uvIndexEstimate} / 12',
+                        pos.uvIndexEstimate > 7 ? Colors.redAccent : (pos.uvIndexEstimate > 4 ? Colors.amber : AppTheme.success),
+                        Icons.shield_outlined,
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: _healthMiniCard(
+                        'Tiempo Seguro de Sol',
+                        '${pos.safeSunMinutes} min',
+                        AppTheme.primary,
+                        Icons.timer_outlined,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 14),
+                Text(
+                  pos.isVitaminDOptimal
+                      ? 'Con el sol a ${pos.elevationDeg.toStringAsFixed(0)}°, tus brazos y rostro sintetizan vitamina D eficientemente en solo 10-15 minutos.'
+                      : 'El sol está a menos de 38° de altura; la atmósfera filtra los rayos UVB. Excelente para pasear sin riesgo de quemaduras.',
+                  style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12, height: 1.4),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
+
+          // Consejos Rápidos de Vida Cotidiana
           Container(
             padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
@@ -441,104 +661,22 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                TextField(
-                  controller: _siteNameCtrl,
-                  decoration: InputDecoration(
-                    labelText: s.siteNameLabel,
-                    prefixIcon: const Icon(Icons.place_rounded,
-                        color: AppTheme.primary),
-                  ),
-                ),
-                const SizedBox(height: 16),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                const Row(
                   children: [
-                    Text(s.objectHeightLabel,
-                        style: const TextStyle(color: AppTheme.textSecondary)),
+                    Icon(Icons.directions_car_rounded, color: AppTheme.accent, size: 20),
+                    SizedBox(width: 8),
                     Text(
-                      '${_objectHeight.toStringAsFixed(1)} m',
-                      style: const TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.bold,
-                        color: AppTheme.primary,
-                      ),
+                      'ESTACIONAMIENTO & SOMBRA INTELIGENTE',
+                      style: TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold),
                     ),
                   ],
                 ),
-                Slider(
-                  value: _objectHeight,
-                  min: 0.5,
-                  max: 25.0,
-                  divisions: 49,
-                  activeColor: AppTheme.primary,
-                  onChanged: (v) => setState(() => _objectHeight = v),
+                const SizedBox(height: 8),
+                Text(
+                  'El sol se pondrá por el ${_getCardinalLabel(pos.azimuthDeg)} (${pos.azimuthDeg.toStringAsFixed(0)}°). Si estacionas junto a un muro o edificio ubicado al oeste, tu auto tendrá sombra natural por la tarde.',
+                  style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12, height: 1.4),
                 ),
               ],
-            ),
-          ),
-          const SizedBox(height: 14),
-          _metricCard(
-            s.shadowLengthResult,
-            '${pos.shadowLengthMeters.toStringAsFixed(2)} m',
-            AppTheme.primary,
-            Icons.straighten_rounded,
-          ),
-          const SizedBox(height: 10),
-          _metricCard(
-            s.pvOptimalTiltResult,
-            '${pos.optimalPvTiltDeg.toStringAsFixed(1)}°',
-            AppTheme.success,
-            Icons.solar_power_rounded,
-          ),
-          const SizedBox(height: 10),
-          _metricCard(
-            s.pvRowSpacingResult,
-            '${pos.minPvRowSpacingMeters.toStringAsFixed(2)} m',
-            AppTheme.accent,
-            Icons.swap_horiz_rounded,
-          ),
-          const SizedBox(height: 18),
-          ElevatedButton.icon(
-            onPressed: () async {
-              final rec = SolarStudyRecord(
-                id: 'SP-${DateTime.now().millisecondsSinceEpoch % 10000}',
-                siteName: _siteNameCtrl.text.trim().isEmpty
-                    ? 'Estudio Solar'
-                    : _siteNameCtrl.text.trim(),
-                latitude: store.latitude,
-                longitude: store.longitude,
-                dayOfYear: _dayOfYear,
-                solarHour: _solarHour,
-                objectHeightMeters: _objectHeight,
-                elevationDeg: pos.elevationDeg,
-                azimuthDeg: pos.azimuthDeg,
-                shadowLengthMeters: pos.shadowLengthMeters,
-                optimalTiltDeg: pos.optimalPvTiltDeg,
-                minRowSpacingMeters: pos.minPvRowSpacingMeters,
-                createdAtIso: DateTime.now().toIso8601String(),
-              );
-              await store.saveStudy(rec);
-              if (mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    content: Text(s.studySavedMsg),
-                    backgroundColor: AppTheme.success,
-                  ),
-                );
-                setState(() => _currentIndex = 2);
-              }
-            },
-            icon: const Icon(Icons.save_rounded, color: Colors.black),
-            label: Text(
-              s.saveStudyBtn,
-              style: const TextStyle(
-                  fontWeight: FontWeight.bold, color: Colors.black),
-            ),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AppTheme.primary,
-              padding: const EdgeInsets.symmetric(vertical: 16),
-              shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(14)),
             ),
           ),
         ],
@@ -546,104 +684,418 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
     );
   }
 
+  // ==========================================
+  // PESTAÑA 3: HOGAR, PLANTAS & SOMBRAS
+  // ==========================================
+  Widget _buildHomeAndPlantsTab(SolarPositionResult pos, StorageService store) {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          // Buscador de Luz para Casas y Pisos
+          Container(
+            padding: const EdgeInsets.all(18),
+            decoration: BoxDecoration(
+              color: AppTheme.darkCard,
+              borderRadius: BorderRadius.circular(18),
+              border: Border.all(color: AppTheme.primary.withValues(alpha: 0.5)),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Row(
+                  children: [
+                    Icon(Icons.apartment_rounded, color: AppTheme.primary, size: 24),
+                    SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        'EVALUADOR DE LUZ PARA CASAS Y PISOS',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.w900,
+                          fontSize: 13,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                const Text(
+                  '¿Estás visitando una vivienda para alquilar o comprar? Selecciona hacia dónde mira la ventana o balcón:',
+                  style: TextStyle(color: AppTheme.textSecondary, fontSize: 12),
+                ),
+                const SizedBox(height: 12),
+                SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(
+                    children: [
+                      _orientationChip(0, 'Ventana Este (Amanecer)', Icons.wb_twilight_rounded),
+                      const SizedBox(width: 8),
+                      _orientationChip(1, 'Ventana Sur (Sol Máximo)', Icons.wb_sunny_rounded),
+                      const SizedBox(width: 8),
+                      _orientationChip(2, 'Ventana Oeste (Tardes)', Icons.nightlight_round),
+                      const SizedBox(width: 8),
+                      _orientationChip(3, 'Ventana Norte (Luz Difusa)', Icons.cloud_outlined),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 14),
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF131D2E),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Text(
+                    _getRoomLightAdvice(_selectedRoomOrientation),
+                    style: const TextStyle(color: Colors.white, fontSize: 12, height: 1.4),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
+
+          // Asistente Solar para Plantas de Interior
+          Container(
+            padding: const EdgeInsets.all(18),
+            decoration: BoxDecoration(
+              color: AppTheme.darkCard,
+              borderRadius: BorderRadius.circular(18),
+              border: Border.all(color: AppTheme.darkBorder),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Row(
+                  children: [
+                    Icon(Icons.eco_rounded, color: AppTheme.success, size: 22),
+                    SizedBox(width: 10),
+                    Text(
+                      '¿DÓNDE PONER MIS PLANTAS?',
+                      style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                SegmentedButton<int>(
+                  segments: const [
+                    ButtonSegment(value: 0, label: Text('Suculentas', style: TextStyle(fontSize: 11))),
+                    ButtonSegment(value: 1, label: Text('Monsteras', style: TextStyle(fontSize: 11))),
+                    ButtonSegment(value: 2, label: Text('Orquídeas', style: TextStyle(fontSize: 11))),
+                  ],
+                  selected: {_selectedPlantType},
+                  onSelectionChanged: (set) => setState(() => _selectedPlantType = set.first),
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  _getPlantAdvice(_selectedPlantType),
+                  style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12, height: 1.4),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
+
+          // Calculadora de Sombras de Obstáculos (Árboles, Muros, Paneles)
+          Container(
+            padding: const EdgeInsets.all(18),
+            decoration: BoxDecoration(
+              color: AppTheme.darkCard,
+              borderRadius: BorderRadius.circular(18),
+              border: Border.all(color: AppTheme.darkBorder),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'CÁLCULO DE SOMBRAS & PANELES SOLARES',
+                  style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+                ),
+                const SizedBox(height: 10),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text('Altura de obstáculo o muro:', style: TextStyle(color: AppTheme.textSecondary, fontSize: 12)),
+                    Text('${_objectHeight.toStringAsFixed(1)} m', style: const TextStyle(color: AppTheme.primary, fontWeight: FontWeight.bold, fontSize: 15)),
+                  ],
+                ),
+                Slider(
+                  value: _objectHeight,
+                  min: 0.5,
+                  max: 15.0,
+                  divisions: 29,
+                  activeColor: AppTheme.primary,
+                  onChanged: (v) => setState(() => _objectHeight = v),
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Expanded(
+                      child: _metricCard('Longitud Sombra', '${pos.shadowLengthMeters.toStringAsFixed(2)} m', AppTheme.primary, Icons.straighten_rounded),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: _metricCard('Inclinación Panel', '${pos.optimalPvTiltDeg.toStringAsFixed(1)}°', AppTheme.accent, Icons.solar_power_rounded),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 14),
+                TextField(
+                  controller: _siteNameCtrl,
+                  style: const TextStyle(color: Colors.white, fontSize: 13),
+                  decoration: const InputDecoration(
+                    labelText: 'Nombre del sitio / Proyecto',
+                    labelStyle: TextStyle(color: AppTheme.textSecondary, fontSize: 12),
+                    prefixIcon: Icon(Icons.bookmark_border_rounded, color: AppTheme.primary, size: 18),
+                    isDense: true,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                ElevatedButton.icon(
+                  onPressed: () async {
+                    final study = SolarStudyRecord(
+                      id: 'SP-${DateTime.now().millisecondsSinceEpoch % 10000}',
+                      siteName: _siteNameCtrl.text.trim().isEmpty ? 'Proyecto Solar' : _siteNameCtrl.text.trim(),
+                      latitude: store.latitude,
+                      longitude: store.longitude,
+                      dayOfYear: _dayOfYear,
+                      solarHour: _solarHour,
+                      objectHeightMeters: _objectHeight,
+                      elevationDeg: pos.elevationDeg,
+                      azimuthDeg: pos.azimuthDeg,
+                      shadowLengthMeters: pos.shadowLengthMeters,
+                      optimalTiltDeg: pos.optimalPvTiltDeg,
+                      minRowSpacingMeters: pos.minPvRowSpacingMeters,
+                      createdAtIso: DateTime.now().toIso8601String(),
+                    );
+                    await store.saveStudy(study);
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('Estudio guardado correctamente ✓'), backgroundColor: AppTheme.success),
+                      );
+                    }
+                  },
+                  icon: const Icon(Icons.save_rounded, color: Colors.black, size: 18),
+                  label: const Text('Guardar Estudio en Historial', style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
+                  style: ElevatedButton.styleFrom(backgroundColor: AppTheme.primary),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ==========================================
+  // PESTAÑA 4: ESTUDIOS Y REPORTES PDF
+  // ==========================================
   Widget _buildSavedStudiesTab(StorageService store) {
-    final s = store.strings;
     if (store.studies.isEmpty) {
-      return Center(
-        child: Text(s.noSavedStudies,
-            style: const TextStyle(color: AppTheme.textSecondary)),
+      return const Center(
+        child: Text('No hay estudios guardados aún.', style: TextStyle(color: AppTheme.textMuted)),
       );
     }
     return ListView.builder(
       padding: const EdgeInsets.all(16),
       itemCount: store.studies.length,
-      itemBuilder: (context, index) {
-        final item = store.studies[index];
-        return Container(
-          margin: const EdgeInsets.only(bottom: 12),
-          padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            color: AppTheme.darkCard,
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: AppTheme.darkBorder),
+      itemBuilder: (ctx, idx) {
+        final item = store.studies[idx];
+        return Card(
+          color: AppTheme.darkCard,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(14),
+            side: const BorderSide(color: AppTheme.darkBorder),
           ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Expanded(
-                    child: Text(
-                      item.siteName,
-                      style: const TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.white,
+          margin: const EdgeInsets.only(bottom: 12),
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Expanded(
+                      child: Text(
+                        item.siteName,
+                        style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white, fontSize: 15),
+                        overflow: TextOverflow.ellipsis,
                       ),
                     ),
-                  ),
-                  Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                    decoration: BoxDecoration(
-                      color: AppTheme.primary.withValues(alpha: 0.2),
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Text(
-                      item.id,
-                      style: const TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.bold,
-                        color: AppTheme.primary,
+                    Text(item.id, style: const TextStyle(color: AppTheme.primary, fontSize: 11, fontWeight: FontWeight.bold)),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  'Elev: ${item.elevationDeg.toStringAsFixed(1)}° • Azimut: ${item.azimuthDeg.toStringAsFixed(1)}° • Sombra: ${item.shadowLengthMeters.toStringAsFixed(2)}m',
+                  style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    Expanded(
+                      child: ElevatedButton.icon(
+                        onPressed: () => _openSignAndShareModal(item, store),
+                        icon: const Icon(Icons.picture_as_pdf_rounded, size: 18, color: Colors.black),
+                        label: const Text('Firmar y Exportar PDF', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.black)),
+                        style: ElevatedButton.styleFrom(backgroundColor: AppTheme.primary),
                       ),
                     ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 6),
-              Text(
-                'Elev: ${item.elevationDeg.toStringAsFixed(1)}° • Azimut: ${item.azimuthDeg.toStringAsFixed(1)}° • Sombra: ${item.shadowLengthMeters.toStringAsFixed(2)}m',
-                style:
-                    const TextStyle(fontSize: 12, color: AppTheme.textSecondary),
-              ),
-              const SizedBox(height: 12),
-              Row(
-                children: [
-                  Expanded(
-                    child: ElevatedButton.icon(
-                      onPressed: () => _openSignAndShareModal(item, store),
-                      icon: const Icon(Icons.picture_as_pdf_rounded,
-                          size: 18, color: Colors.black),
-                      label: Text(
-                        s.signAndExportBtn,
-                        style: const TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.black),
-                      ),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: AppTheme.primary,
-                      ),
+                    const SizedBox(width: 8),
+                    IconButton(
+                      icon: const Icon(Icons.delete_outline_rounded, color: AppTheme.textMuted),
+                      onPressed: () => store.deleteStudy(item.id),
                     ),
-                  ),
-                  const SizedBox(width: 8),
-                  IconButton(
-                    icon: const Icon(Icons.delete_outline_rounded,
-                        color: AppTheme.textMuted),
-                    onPressed: () => store.deleteStudy(item.id),
-                  ),
-                ],
-              ),
-            ],
+                  ],
+                ),
+              ],
+            ),
           ),
         );
       },
     );
   }
 
-  Future<void> _openSignAndShareModal(
-      SolarStudyRecord study, StorageService store) async {
+  // ==========================================
+  // PESTAÑA 5: AJUSTES & UBICACIÓN
+  // ==========================================
+  Widget _buildSettingsTab(StorageService store) {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          // Banner Pro
+          InkWell(
+            onTap: () {
+              Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const PaywallScreen()),
+              );
+            },
+            borderRadius: BorderRadius.circular(16),
+            child: Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  colors: store.isPro
+                      ? [const Color(0xFF065F46), const Color(0xFF047857)]
+                      : [const Color(0xFF1E293B), const Color(0xFF0F172A)],
+                ),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(
+                  color: store.isPro ? const Color(0xFF10B981) : AppTheme.primary.withValues(alpha: 0.6),
+                ),
+              ),
+              child: Row(
+                children: [
+                  Icon(
+                    store.isPro ? Icons.verified_rounded : Icons.star_rounded,
+                    color: store.isPro ? Colors.white : AppTheme.primary,
+                    size: 32,
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          store.isPro
+                              ? 'SunPath AR PRO — Desbloqueado'
+                              : (store.isTrialActive
+                                  ? 'Prueba Gratuita (${store.trialDaysRemaining} días restantes)'
+                                  : 'Actualizar a SunPath AR PRO'),
+                          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: Colors.white),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          store.isPro
+                              ? 'Licencia PRO activa • Acceso ilimitado'
+                              : 'Toca aquí para ver planes y prueba de 7 días',
+                          style: TextStyle(fontSize: 12, color: store.isPro ? Colors.white70 : AppTheme.textSecondary),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const Icon(Icons.arrow_forward_ios_rounded, color: AppTheme.textMuted, size: 16),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 20),
+
+          // Coordenadas
+          const Text('UBICACIÓN GEOGRÁFICA (100% OFFLINE)', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: AppTheme.textSecondary)),
+          const SizedBox(height: 8),
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: AppTheme.darkCard,
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: AppTheme.darkBorder),
+            ),
+            child: Column(
+              children: [
+                TextField(
+                  controller: _latCtrl,
+                  keyboardType: TextInputType.number,
+                  style: const TextStyle(color: Colors.white),
+                  decoration: const InputDecoration(labelText: 'Latitud (° N / -S)', isDense: true),
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: _lonCtrl,
+                  keyboardType: TextInputType.number,
+                  style: const TextStyle(color: Colors.white),
+                  decoration: const InputDecoration(labelText: 'Longitud (° E / -W)', isDense: true),
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: _inspectorCtrl,
+                  style: const TextStyle(color: Colors.white),
+                  decoration: const InputDecoration(labelText: 'Nombre / Profesional en Reportes', isDense: true),
+                ),
+                const SizedBox(height: 14),
+                ElevatedButton(
+                  onPressed: () {
+                    final lat = double.tryParse(_latCtrl.text) ?? store.latitude;
+                    final lon = double.tryParse(_lonCtrl.text) ?? store.longitude;
+                    store.updateSettings(latitude: lat, longitude: lon, inspectorName: _inspectorCtrl.text);
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Configuración guardada ✓'), backgroundColor: AppTheme.success),
+                    );
+                  },
+                  style: ElevatedButton.styleFrom(backgroundColor: AppTheme.primary),
+                  child: const Text('Guardar Ubicación', style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
+          // Presets de Ciudades
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: CityLocationPreset.presets.map((c) {
+              return ActionChip(
+                label: Text(c.name, style: const TextStyle(fontSize: 11)),
+                onPressed: () {
+                  _latCtrl.text = c.latitude.toStringAsFixed(4);
+                  _lonCtrl.text = c.longitude.toStringAsFixed(4);
+                  store.updateSettings(latitude: c.latitude, longitude: c.longitude, inspectorName: _inspectorCtrl.text);
+                },
+              );
+            }).toList(),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // Modales y Helpers
+  Future<void> _openSignAndShareModal(SolarStudyRecord study, StorageService store) async {
     if (store.isTrialExpired) {
       final unlocked = await Navigator.of(context).push<bool>(
         MaterialPageRoute(builder: (_) => const PaywallScreen()),
@@ -656,6 +1108,7 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
       penColor: Colors.black,
       exportBackgroundColor: Colors.white,
     );
+    if (!mounted) return;
     await showModalBottomSheet(
       context: context,
       backgroundColor: AppTheme.darkCard,
@@ -667,33 +1120,19 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Text(
-                store.strings.signAndExportBtn,
-                style:
-                    const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-              ),
+              const Text('Firma Digital y Exportar Reporte PDF', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white)),
               const SizedBox(height: 12),
               Container(
                 height: 150,
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Signature(
-                  controller: sigController,
-                  backgroundColor: Colors.white,
-                ),
+                decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(12)),
+                child: Signature(controller: sigController, backgroundColor: Colors.white),
               ),
-              const SizedBox(height: 14),
+              const SizedBox(height: 12),
               ElevatedButton.icon(
                 onPressed: () async {
-                  String? sigB64;
-                  if (sigController.isNotEmpty) {
-                    final bytes = await sigController.toPngBytes();
-                    if (bytes != null) sigB64 = base64Encode(bytes);
-                  }
-                  if (ctx.mounted) Navigator.pop(ctx);
-                  final signedRecord = SolarStudyRecord(
+                  final sigBytes = await sigController.toPngBytes();
+                  final sigBase64 = sigBytes != null ? base64Encode(sigBytes) : null;
+                  final updatedStudy = SolarStudyRecord(
                     id: study.id,
                     siteName: study.siteName,
                     latitude: study.latitude,
@@ -707,22 +1146,18 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
                     optimalTiltDeg: study.optimalTiltDeg,
                     minRowSpacingMeters: study.minRowSpacingMeters,
                     createdAtIso: study.createdAtIso,
-                    signatureBase64: sigB64,
+                    signatureBase64: sigBase64,
                   );
                   await PdfReportService.shareStudyPdf(
-                    study: signedRecord,
+                    study: updatedStudy,
                     inspectorName: store.inspectorName,
                     localeCode: store.localeCode,
                   );
+                  if (ctx.mounted) Navigator.pop(ctx);
                 },
                 icon: const Icon(Icons.share_rounded, color: Colors.black),
-                label: Text(
-                  store.strings.exportPdfBtn,
-                  style: const TextStyle(
-                      fontWeight: FontWeight.bold, color: Colors.black),
-                ),
-                style: ElevatedButton.styleFrom(
-                    backgroundColor: AppTheme.primary),
+                label: const Text('Exportar & Compartir PDF', style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
+                style: ElevatedButton.styleFrom(backgroundColor: AppTheme.primary),
               ),
             ],
           ),
@@ -731,168 +1166,60 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
     );
   }
 
-  Widget _buildSettingsTab(StorageService store) {
-    final s = store.strings;
-    return SingleChildScrollView(
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
+  Widget _orientationChip(int index, String label, IconData icon) {
+    final isSelected = _selectedRoomOrientation == index;
+    return ChoiceChip(
+      avatar: Icon(icon, size: 16, color: isSelected ? Colors.black : AppTheme.primary),
+      label: Text(label, style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: isSelected ? Colors.black : Colors.white)),
+      selected: isSelected,
+      selectedColor: AppTheme.primary,
+      backgroundColor: AppTheme.darkCard,
+      onSelected: (_) => setState(() => _selectedRoomOrientation = index),
+    );
+  }
+
+  String _getRoomLightAdvice(int index) {
+    switch (index) {
+      case 0:
+        return '☀️ Ventana al Este: Luz suave y fresca al amanecer. Ideal para dormitorios o cocinas; la habitación se mantendrá fresca por la tarde.';
+      case 1:
+        return '🔥 Ventana al Sur: Máxima entrada de sol y calor casi todo el día (en hemisferio norte). Muy luminosa en invierno, excelente para salas de estar y plantas.';
+      case 2:
+        return '🌇 Ventana al Oeste: Recibe el sol de la tarde cuando el ambiente ya está caliente. Habitación calurosa en verano pero con hermosas puestas de sol.';
+      default:
+        return '☁️ Ventana al Norte: Luz difusa y constante sin sol directo cegador. Excelente para estudios de trabajo, oficinas o pintura.';
+    }
+  }
+
+  String _getPlantAdvice(int type) {
+    switch (type) {
+      case 0:
+        return '🌵 Suculentas & Cactus: Requieren sol directo 4 a 6 horas diarias. Colócalas junto a ventanas orientadas al Sur o al Este. Evita rincones oscuros.';
+      case 1:
+        return '🌿 Monstera, Ficus & Potos: Prefieren luz brillante pero indirecta. Cerca de una ventana al Este o a 1 metro de una ventana al Sur con cortina ligera.';
+      default:
+        return '🌸 Orquídeas & Helechos: Luz suave filtrada. El sol directo quema sus hojas rápidamente. Ventanas al Norte o baños iluminados son ideales.';
+    }
+  }
+
+  Widget _metricCard(String label, String val, Color c, IconData icon) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: AppTheme.darkCard,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppTheme.darkBorder),
+      ),
+      child: Row(
         children: [
-          // Pro Unlocked Banner
-          Container(
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              gradient: const LinearGradient(
-                colors: [Color(0xFF065F46), Color(0xFF047857)],
-              ),
-              borderRadius: BorderRadius.circular(16),
-            ),
-            child: Row(
-              children: [
-                const Icon(Icons.verified_rounded,
-                    color: Colors.white, size: 32),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        s.proEditionTitle,
-                        style: const TextStyle(
-                          fontWeight: FontWeight.bold,
-                          fontSize: 15,
-                          color: Colors.white,
-                        ),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        s.proEditionDesc,
-                        style: const TextStyle(
-                            fontSize: 12, color: Colors.white70),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 20),
-          Text(
-            s.languageTitle,
-            style: const TextStyle(
-              fontSize: 12,
-              fontWeight: FontWeight.bold,
-              color: AppTheme.textSecondary,
-            ),
-          ),
-          const SizedBox(height: 8),
-          Container(
-            padding: const EdgeInsets.all(14),
-            decoration: BoxDecoration(
-              color: AppTheme.darkCard,
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(color: AppTheme.darkBorder),
-            ),
-            child: Row(
-              children: [
-                _langBtn(store, 'es', '🇪🇸', 'Español'),
-                const SizedBox(width: 8),
-                _langBtn(store, 'en', '🇺🇸', 'English'),
-                const SizedBox(width: 8),
-                _langBtn(store, 'pt', '🇧🇷', 'Português'),
-              ],
-            ),
-          ),
-          const SizedBox(height: 20),
-          Text(
-            s.locationPresetTitle,
-            style: const TextStyle(
-              fontSize: 12,
-              fontWeight: FontWeight.bold,
-              color: AppTheme.textSecondary,
-            ),
-          ),
-          const SizedBox(height: 8),
-          Container(
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: AppTheme.darkCard,
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(color: AppTheme.darkBorder),
-            ),
+          Icon(icon, color: c, size: 18),
+          const SizedBox(width: 8),
+          Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Wrap(
-                  spacing: 6,
-                  runSpacing: 6,
-                  children: CityLocationPreset.presets.map((city) {
-                    return ActionChip(
-                      label:
-                          Text(city.name, style: const TextStyle(fontSize: 11)),
-                      onPressed: () {
-                        _latCtrl.text = city.latitude.toStringAsFixed(4);
-                        _lonCtrl.text = city.longitude.toStringAsFixed(4);
-                        store.updateSettings(
-                          latitude: city.latitude,
-                          longitude: city.longitude,
-                          inspectorName: _inspectorCtrl.text,
-                        );
-                      },
-                    );
-                  }).toList(),
-                ),
-                const SizedBox(height: 12),
-                Row(
-                  children: [
-                    Expanded(
-                      child: TextField(
-                        controller: _latCtrl,
-                        keyboardType: TextInputType.number,
-                        decoration: InputDecoration(labelText: s.latitudeLabel),
-                      ),
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: TextField(
-                        controller: _lonCtrl,
-                        keyboardType: TextInputType.number,
-                        decoration:
-                            InputDecoration(labelText: s.longitudeLabel),
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: _inspectorCtrl,
-                  decoration: InputDecoration(labelText: s.inspectorNameLabel),
-                ),
-                const SizedBox(height: 16),
-                SizedBox(
-                  width: double.infinity,
-                  child: ElevatedButton.icon(
-                    onPressed: () {
-                      final lat = double.tryParse(_latCtrl.text) ?? 40.4168;
-                      final lon = double.tryParse(_lonCtrl.text) ?? -3.7038;
-                      store.updateSettings(
-                        latitude: lat,
-                        longitude: lon,
-                        inspectorName: _inspectorCtrl.text,
-                      );
-                    },
-                    icon: const Icon(Icons.check_rounded, color: Colors.black),
-                    label: Text(
-                      s.saveSettingsBtn,
-                      style: const TextStyle(
-                          fontWeight: FontWeight.bold, color: Colors.black),
-                    ),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: AppTheme.primary,
-                      padding: const EdgeInsets.symmetric(vertical: 14),
-                    ),
-                  ),
-                ),
+                Text(label, style: const TextStyle(fontSize: 10, color: AppTheme.textSecondary)),
+                Text(val, style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: c)),
               ],
             ),
           ),
@@ -901,39 +1228,27 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
     );
   }
 
-  Widget _langBtn(
-      StorageService store, String code, String flag, String label) {
-    final selected = store.localeCode == code;
-    return Expanded(
-      child: InkWell(
-        onTap: () => store.setLocale(code),
+  Widget _healthMiniCard(String label, String val, Color c, IconData icon) {
+    return Container(
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: const Color(0xFF131D2E),
         borderRadius: BorderRadius.circular(12),
-        child: Container(
-          padding: const EdgeInsets.symmetric(vertical: 10),
-          decoration: BoxDecoration(
-            color: selected
-                ? AppTheme.primary.withValues(alpha: 0.2)
-                : AppTheme.darkSurface,
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(
-              color: selected ? AppTheme.primary : AppTheme.darkBorder,
-            ),
-          ),
-          child: Column(
+        border: Border.all(color: c.withValues(alpha: 0.3)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
             children: [
-              Text(flag, style: const TextStyle(fontSize: 20)),
-              const SizedBox(height: 4),
-              Text(
-                label,
-                style: TextStyle(
-                  fontSize: 11,
-                  fontWeight: selected ? FontWeight.bold : FontWeight.normal,
-                  color: selected ? Colors.white : AppTheme.textSecondary,
-                ),
-              ),
+              Icon(icon, size: 14, color: c),
+              const SizedBox(width: 4),
+              Expanded(child: Text(label, style: const TextStyle(fontSize: 10, color: AppTheme.textSecondary), overflow: TextOverflow.ellipsis)),
             ],
           ),
-        ),
+          const SizedBox(height: 4),
+          Text(val, style: TextStyle(fontSize: 15, fontWeight: FontWeight.w900, color: c)),
+        ],
       ),
     );
   }
@@ -948,83 +1263,9 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
     if (az >= 247.5 && az < 292.5) return 'Oeste';
     return 'Noroeste';
   }
-
-  Widget _metricCard(
-      String title, String value, Color accent, IconData icon) {
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: AppTheme.darkCard,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: accent.withValues(alpha: 0.5)),
-      ),
-      child: Row(
-        children: [
-          Container(
-            padding: const EdgeInsets.all(10),
-            decoration: BoxDecoration(
-              color: accent.withValues(alpha: 0.15),
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: Icon(icon, color: accent, size: 22),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(title,
-                    style: const TextStyle(
-                        fontSize: 11, color: AppTheme.textSecondary)),
-                const SizedBox(height: 2),
-                Text(
-                  value,
-                  style: const TextStyle(
-                    fontSize: 20,
-                    fontWeight: FontWeight.w900,
-                    color: Colors.white,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _miniStat(String label, String val, IconData icon) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      decoration: BoxDecoration(
-        color: AppTheme.darkCard,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: AppTheme.darkBorder),
-      ),
-      child: Row(
-        children: [
-          Icon(icon, color: AppTheme.primary, size: 18),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(label,
-                    style: const TextStyle(
-                        fontSize: 10, color: AppTheme.textSecondary)),
-                Text(val,
-                    style: const TextStyle(
-                        fontSize: 13, fontWeight: FontWeight.bold)),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
 }
 
+// Painter de la Bóveda Celeste
 class _SolarSkyDomePainter extends CustomPainter {
   final SolarPositionResult currentPos;
   final List<SolarPositionResult> dailyArc;
@@ -1044,17 +1285,14 @@ class _SolarSkyDomePainter extends CustomPainter {
     final cy = size.height / 2;
     final maxR = math.min(cx, cy) - 22;
 
-    // Background Sky Gradient
+    // Fondo degradado del cielo
     final bgPaint = Paint()
-      ..shader = RadialGradient(
-        colors: [
-          const Color(0xFF16233B),
-          const Color(0xFF0B111E),
-        ],
+      ..shader = const RadialGradient(
+        colors: [Color(0xFF16233B), Color(0xFF0B111E)],
       ).createShader(Rect.fromCircle(center: Offset(cx, cy), radius: maxR));
     canvas.drawCircle(Offset(cx, cy), maxR, bgPaint);
 
-    // Outer Horizon Compass Circle
+    // Círculos de elevación
     final ringPaint = Paint()
       ..color = const Color(0xFF2A3A54)
       ..style = PaintingStyle.stroke
@@ -1063,13 +1301,11 @@ class _SolarSkyDomePainter extends CustomPainter {
     canvas.drawCircle(Offset(cx, cy), maxR * 0.66, ringPaint..strokeWidth = 1..color = const Color(0xFF1E293B));
     canvas.drawCircle(Offset(cx, cy), maxR * 0.33, ringPaint);
 
-    // Crosshairs
-    canvas.drawLine(
-        Offset(cx - maxR, cy), Offset(cx + maxR, cy), ringPaint);
-    canvas.drawLine(
-        Offset(cx, cy - maxR), Offset(cx, cy + maxR), ringPaint);
+    // Cruz de coordenadas
+    canvas.drawLine(Offset(cx - maxR, cy), Offset(cx + maxR, cy), ringPaint);
+    canvas.drawLine(Offset(cx, cy - maxR), Offset(cx, cy + maxR), ringPaint);
 
-    // Cardinal Points (N, S, E, W) rotated by device compass heading
+    // Puntos Cardinales rotados con la brújula
     final rotationRad = isLive ? (-compassHeading * math.pi / 180.0) : 0.0;
 
     _drawCardinal(canvas, cx, cy, maxR, rotationRad, 0, 'N', Colors.redAccent, isBold: true);
@@ -1077,7 +1313,7 @@ class _SolarSkyDomePainter extends CustomPainter {
     _drawCardinal(canvas, cx, cy, maxR, rotationRad, 180, 'S', AppTheme.textSecondary);
     _drawCardinal(canvas, cx, cy, maxR, rotationRad, 270, 'W', AppTheme.textSecondary);
 
-    // Draw Daily Solar Trajectory Path
+    // Trayectoria diaria del Sol
     final path = Path();
     bool started = false;
     for (final pt in dailyArc) {
@@ -1098,24 +1334,15 @@ class _SolarSkyDomePainter extends CustomPainter {
       ..strokeWidth = 3.5;
     canvas.drawPath(path, arcPaint);
 
-    // Draw Current Sun Position
+    // Posición del Sol
     final sunElev = currentPos.elevationDeg.clamp(0.0, 90.0);
-    final sunPos =
-        _polarToScreen(cx, cy, maxR, currentPos.azimuthDeg, sunElev, rotationRad);
+    final sunPos = _polarToScreen(cx, cy, maxR, currentPos.azimuthDeg, sunElev, rotationRad);
 
-    // Sun Glow
-    canvas.drawCircle(
-      sunPos,
-      20,
-      Paint()..color = const Color(0xFFF59E0B).withValues(alpha: 0.3),
-    );
-    canvas.drawCircle(
-      sunPos,
-      10,
-      Paint()..color = const Color(0xFFFBBF24),
-    );
+    // Resplandor del Sol
+    canvas.drawCircle(sunPos, 20, Paint()..color = const Color(0xFFF59E0B).withValues(alpha: 0.3));
+    canvas.drawCircle(sunPos, 10, Paint()..color = const Color(0xFFFBBF24));
 
-    // Ray to center
+    // Rayo al centro
     canvas.drawLine(
       Offset(cx, cy),
       sunPos,
@@ -1125,7 +1352,7 @@ class _SolarSkyDomePainter extends CustomPainter {
         ..style = PaintingStyle.stroke,
     );
 
-    // Center Device Marker
+    // Marcador central
     canvas.drawCircle(Offset(cx, cy), 5, Paint()..color = isLive ? AppTheme.success : AppTheme.primary);
   }
 
@@ -1133,7 +1360,7 @@ class _SolarSkyDomePainter extends CustomPainter {
     final rad = (deg - 90.0) * math.pi / 180.0 + baseRotation;
     final r = maxR - 12;
     final pos = Offset(cx + r * math.cos(rad), cy + r * math.sin(rad));
-    
+
     final tp = TextPainter(
       text: TextSpan(
         text: label,
@@ -1149,8 +1376,7 @@ class _SolarSkyDomePainter extends CustomPainter {
     tp.paint(canvas, Offset(pos.dx - tp.width / 2, pos.dy - tp.height / 2));
   }
 
-  Offset _polarToScreen(
-      double cx, double cy, double maxR, double azDeg, double elDeg, double baseRotation) {
+  Offset _polarToScreen(double cx, double cy, double maxR, double azDeg, double elDeg, double baseRotation) {
     final r = maxR * (1.0 - (elDeg.clamp(0.0, 90.0) / 90.0));
     final rad = (azDeg - 90.0) * math.pi / 180.0 + baseRotation;
     return Offset(cx + r * math.cos(rad), cy + r * math.sin(rad));

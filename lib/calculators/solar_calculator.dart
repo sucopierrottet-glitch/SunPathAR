@@ -8,11 +8,19 @@ class SolarPositionResult {
   final String solarNoonTime;
   final String sunsetTime;
   final String goldenHourEvening;
+  final String goldenHourMorning;
+  final String blueHourEvening;
   final double dayLengthHours;
   final double moonIlluminationPercent;
   final double shadowLengthMeters;
   final double optimalPvTiltDeg;
   final double minPvRowSpacingMeters;
+
+  // Cálculos de Estilo de Vida y Salud
+  final int uvIndexEstimate;
+  final int safeSunMinutes;
+  final bool isVitaminDOptimal;
+  final String sunStatusDescription;
 
   const SolarPositionResult({
     required this.elevationDeg,
@@ -22,11 +30,17 @@ class SolarPositionResult {
     required this.solarNoonTime,
     required this.sunsetTime,
     required this.goldenHourEvening,
+    required this.goldenHourMorning,
+    required this.blueHourEvening,
     required this.dayLengthHours,
     required this.moonIlluminationPercent,
     required this.shadowLengthMeters,
     required this.optimalPvTiltDeg,
     required this.minPvRowSpacingMeters,
+    required this.uvIndexEstimate,
+    required this.safeSunMinutes,
+    required this.isVitaminDOptimal,
+    required this.sunStatusDescription,
   });
 }
 
@@ -53,8 +67,7 @@ class SolarCalculator {
   static double _degToRad(double deg) => deg * math.pi / 180.0;
   static double _radToDeg(double rad) => rad * 180.0 / math.pi;
 
-  /// Computes exact solar geometry for given latitude, dayOfYear (1..365),
-  /// solarHour (0.0..24.0), and obstacle height in meters.
+  /// Computes exact solar geometry and lifestyle metrics
   static SolarPositionResult calculate({
     required double latitude,
     required double longitude,
@@ -99,7 +112,11 @@ class SolarCalculator {
 
     final sunriseH = (12.0 - halfDayHours).clamp(0.0, 23.99);
     final sunsetH = (12.0 + halfDayHours).clamp(0.0, 23.99);
-    final goldenH = (sunsetH - 0.85).clamp(0.0, 23.99);
+    
+    // Golden & Blue Hour intervals
+    final goldenEveStart = (sunsetH - 1.0).clamp(0.0, 23.99);
+    final goldenMornEnd = (sunriseH + 1.0).clamp(0.0, 23.99);
+    final blueEveEnd = (sunsetH + 0.5).clamp(0.0, 23.99);
 
     // Shadow length calculation
     double shadowLength = 0.0;
@@ -109,7 +126,7 @@ class SolarCalculator {
       shadowLength = objectHeightMeters * 57.3;
     }
 
-    // Optimal fixed PV tilt angle (approx |Lat| * 0.87 + 3.1 deg)
+    // Optimal fixed PV tilt angle
     final optimalTilt = (clampedLat.abs() * 0.87 + 3.1).clamp(10.0, 60.0);
 
     // Minimum inter-row PV spacing for winter solstice at 10:00 AM
@@ -119,9 +136,46 @@ class SolarCalculator {
     final minRowSpacing = panelProjectionHeight /
         math.tan(_degToRad(winterSolsticeSunEl));
 
-    // Synodic lunar illumination approximation (29.53 day cycle)
+    // Synodic lunar illumination approximation
     final lunarCyclePhase = ((dayOfYear % 29.53) / 29.53) * 2 * math.pi;
     final moonIllum = ((1.0 - math.cos(lunarCyclePhase)) / 2.0) * 100.0;
+
+    // UV Index estimation from elevation: UV ≈ 12 * sin(elevation)
+    int uv = 0;
+    if (elevationDeg > 0) {
+      uv = (12.0 * math.sin(elevationRad)).round().clamp(0, 14);
+    }
+
+    // Safe sun exposure time based on UV
+    int safeMinutes = 120;
+    if (uv >= 11) {
+      safeMinutes = 10;
+    } else if (uv >= 8) {
+      safeMinutes = 15;
+    } else if (uv >= 6) {
+      safeMinutes = 25;
+    } else if (uv >= 3) {
+      safeMinutes = 45;
+    }
+
+    // Vitamin D synthesis requires solar elevation > 35-40°
+    final isVitD = elevationDeg >= 38.0;
+
+    // Friendly Sun Status Description
+    String statusDesc;
+    if (elevationDeg < -6.0) {
+      statusDesc = 'Noche profunda • Cielo estrellado';
+    } else if (elevationDeg < 0.0) {
+      statusDesc = 'Crepúsculo místico • Hora Azul para fotos';
+    } else if (elevationDeg < 12.0) {
+      statusDesc = 'Luz cálida mágica • Hora Dorada perfecta para retratos';
+    } else if (elevationDeg < 38.0) {
+      statusDesc = 'Luz suave de mañana/tarde • Ideal para pasear y plantas';
+    } else if (elevationDeg < 65.0) {
+      statusDesc = 'Sol radiante • Ventana óptima para sintetizar Vitamina D';
+    } else {
+      statusDesc = 'Sol en cenit pleno • Máxima intensidad y sombras cortas';
+    }
 
     return SolarPositionResult(
       elevationDeg: elevationDeg,
@@ -130,16 +184,21 @@ class SolarCalculator {
       sunriseTime: _formatHour(sunriseH),
       solarNoonTime: '12:00',
       sunsetTime: _formatHour(sunsetH),
-      goldenHourEvening: '${_formatHour(goldenH)} - ${_formatHour(sunsetH)}',
+      goldenHourEvening: '${_formatHour(goldenEveStart)} - ${_formatHour(sunsetH)}',
+      goldenHourMorning: '${_formatHour(sunriseH)} - ${_formatHour(goldenMornEnd)}',
+      blueHourEvening: '${_formatHour(sunsetH)} - ${_formatHour(blueEveEnd)}',
       dayLengthHours: dayLengthHours,
       moonIlluminationPercent: moonIllum,
       shadowLengthMeters: shadowLength,
       optimalPvTiltDeg: optimalTilt,
       minPvRowSpacingMeters: minRowSpacing,
+      uvIndexEstimate: uv,
+      safeSunMinutes: safeMinutes,
+      isVitaminDOptimal: isVitD,
+      sunStatusDescription: statusDesc,
     );
   }
 
-  /// Generates hourly trajectory points (azimuth, elevation) from 5:00 to 20:00
   static List<SolarPositionResult> calculateDailyArc({
     required double latitude,
     required double longitude,
