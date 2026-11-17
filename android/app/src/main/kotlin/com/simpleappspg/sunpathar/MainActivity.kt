@@ -2,8 +2,13 @@
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.content.ContentValues
 import android.content.Context
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.ImageFormat
+import android.graphics.Matrix
 import android.graphics.SurfaceTexture
 import android.hardware.Sensor
 import android.hardware.SensorEvent
@@ -17,9 +22,13 @@ import android.hardware.camera2.CaptureRequest
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
+import android.media.ImageReader
+import android.os.Build
 import android.os.Bundle
+import android.os.Environment
 import android.os.Handler
 import android.os.HandlerThread
+import android.provider.MediaStore
 import android.util.Size
 import android.view.Surface
 import androidx.core.app.ActivityCompat
@@ -28,6 +37,8 @@ import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.view.TextureRegistry
+import java.io.File
+import java.io.FileOutputStream
 import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.sqrt
@@ -57,10 +68,14 @@ class MainActivity : FlutterActivity(), SensorEventListener {
     private var captureSession: CameraCaptureSession? = null
     private var surfaceEntry: TextureRegistry.SurfaceTextureEntry? = null
     private var previewSurface: Surface? = null
+    private var imageReader: ImageReader? = null
+    private var currentSensorOrientation: Int = 90
+    private var currentIsFront: Boolean = false
     private var cameraThread: HandlerThread? = null
     private var cameraHandler: Handler? = null
     private var pendingCameraResult: MethodChannel.Result? = null
     private var pendingCameraLens: String = "back"
+    private var pendingCaptureResult: MethodChannel.Result? = null
 
     // Location fields
     private var pendingLocationResult: MethodChannel.Result? = null
@@ -83,6 +98,9 @@ class MainActivity : FlutterActivity(), SensorEventListener {
                 "startCamera" -> {
                     val lens = call.argument<String>("lens") ?: "back"
                     handleStartCamera(lens, result)
+                }
+                "capturePhoto" -> {
+                    handleCapturePhoto(result)
                 }
                 "stopCamera" -> {
                     closeCamera()
@@ -217,6 +235,9 @@ class MainActivity : FlutterActivity(), SensorEventListener {
             val sizes = map?.getOutputSizes(SurfaceTexture::class.java)
             val chosenSize = sizes?.firstOrNull { it.width <= 1280 && it.height <= 960 } ?: Size(640, 480)
 
+            currentSensorOrientation = sensorOrientation
+            currentIsFront = isFront
+
             startCameraThread()
             val entry = flutterRenderer?.createSurfaceTexture()
             if (entry == null) {
@@ -229,6 +250,26 @@ class MainActivity : FlutterActivity(), SensorEventListener {
             val surface = Surface(texture)
             previewSurface = surface
 
+            val reader = ImageReader.newInstance(chosenSize.width, chosenSize.height, ImageFormat.JPEG, 2)
+            imageReader = reader
+            reader.setOnImageAvailableListener({ r ->
+                val img = r.acquireLatestImage() ?: return@setOnImageAvailableListener
+                try {
+                    val buffer = img.planes[0].buffer
+                    val bytes = ByteArray(buffer.remaining())
+                    buffer.get(bytes)
+                    saveCapturedJpeg(bytes)
+                } catch (e: Exception) {
+                    val capRes = pendingCaptureResult
+                    pendingCaptureResult = null
+                    runOnUiThread {
+                        capRes?.success(mapOf("status" to "error", "message" to (e.message ?: "Save failed")))
+                    }
+                } finally {
+                    img.close()
+                }
+            }, cameraHandler)
+
             var replied = false
             manager.openCamera(selectedId, object : CameraDevice.StateCallback() {
                 override fun onOpened(camera: CameraDevice) {
@@ -237,7 +278,7 @@ class MainActivity : FlutterActivity(), SensorEventListener {
                         val builder = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
                         builder.addTarget(surface)
                         @Suppress("DEPRECATION")
-                        camera.createCaptureSession(listOf(surface), object : CameraCaptureSession.StateCallback() {
+                        camera.createCaptureSession(listOf(surface, reader.surface), object : CameraCaptureSession.StateCallback() {
                             override fun onConfigured(session: CameraCaptureSession) {
                                 if (cameraDevice == null) return
                                 captureSession = session
@@ -307,6 +348,97 @@ class MainActivity : FlutterActivity(), SensorEventListener {
         }
     }
 
+    private fun handleCapturePhoto(result: MethodChannel.Result) {
+        val cam = cameraDevice
+        val session = captureSession
+        val reader = imageReader
+        if (cam == null || session == null || reader == null) {
+            result.success(mapOf("status" to "camera_not_active"))
+            return
+        }
+        try {
+            pendingCaptureResult = result
+            val captureBuilder = cam.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE)
+            captureBuilder.addTarget(reader.surface)
+            captureBuilder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+            session.capture(captureBuilder.build(), null, cameraHandler)
+        } catch (e: Exception) {
+            pendingCaptureResult = null
+            result.success(mapOf("status" to "error", "message" to (e.message ?: "Capture failed")))
+        }
+    }
+
+    private fun saveCapturedJpeg(bytes: ByteArray) {
+        val rawBitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+        val finalBitmap = if (rawBitmap != null) {
+            val matrix = Matrix()
+            // Rotate bitmap to match upright portrait orientation
+            if (rawBitmap.width > rawBitmap.height) {
+                matrix.postRotate(currentSensorOrientation.toFloat())
+            }
+            if (currentIsFront) {
+                matrix.postScale(-1f, 1f)
+            }
+            val rotated = Bitmap.createBitmap(rawBitmap, 0, 0, rawBitmap.width, rawBitmap.height, matrix, true)
+            if (rotated !== rawBitmap) rawBitmap.recycle()
+            rotated
+        } else {
+            null
+        }
+
+        val filename = "SunPathAR_${System.currentTimeMillis()}.jpg"
+        val cacheFile = File(cacheDir, filename)
+        FileOutputStream(cacheFile).use { fos ->
+            if (finalBitmap != null) {
+                finalBitmap.compress(Bitmap.CompressFormat.JPEG, 92, fos)
+            } else {
+                fos.write(bytes)
+            }
+        }
+
+        var savedToGallery = false
+        try {
+            val values = ContentValues().apply {
+                put(MediaStore.Images.Media.DISPLAY_NAME, filename)
+                put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    put(MediaStore.Images.Media.RELATIVE_PATH, "${Environment.DIRECTORY_PICTURES}/SunPathAR")
+                    put(MediaStore.Images.Media.IS_PENDING, 1)
+                }
+            }
+            val uri = contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+            if (uri != null) {
+                contentResolver.openOutputStream(uri)?.use { out ->
+                    if (finalBitmap != null) {
+                        finalBitmap.compress(Bitmap.CompressFormat.JPEG, 92, out)
+                    } else {
+                        out.write(bytes)
+                    }
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    values.clear()
+                    values.put(MediaStore.Images.Media.IS_PENDING, 0)
+                    contentResolver.update(uri, values, null, null)
+                }
+                savedToGallery = true
+            }
+        } catch (_: Exception) {
+            savedToGallery = false
+        } finally {
+            finalBitmap?.recycle()
+        }
+
+        val capRes = pendingCaptureResult
+        pendingCaptureResult = null
+        runOnUiThread {
+            capRes?.success(mapOf(
+                "status" to "ok",
+                "filePath" to cacheFile.absolutePath,
+                "savedToGallery" to savedToGallery
+            ))
+        }
+    }
+
     private fun startCameraThread() {
         if (cameraThread == null) {
             cameraThread = HandlerThread("SunPathCameraThread").also { it.start() }
@@ -320,6 +452,8 @@ class MainActivity : FlutterActivity(), SensorEventListener {
             captureSession = null
             cameraDevice?.close()
             cameraDevice = null
+            imageReader?.close()
+            imageReader = null
             previewSurface?.release()
             previewSurface = null
             surfaceEntry?.release()

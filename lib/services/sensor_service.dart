@@ -102,6 +102,15 @@ class SensorService extends ChangeNotifier {
     return startCamera(front: !_isFrontCamera);
   }
 
+  Future<Map<String, dynamic>?> capturePhoto() async {
+    try {
+      final res = await _channel.invokeMapMethod<String, dynamic>('capturePhoto');
+      return res;
+    } catch (_) {
+      return null;
+    }
+  }
+
   Future<void> stopCamera() async {
     try {
       await _channel.invokeMethod('stopCamera');

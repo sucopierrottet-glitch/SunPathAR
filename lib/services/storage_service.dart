@@ -85,8 +85,11 @@ class StorageService extends ChangeNotifier {
   static const String _keyLon = 'sunpath_lon';
   static const String _keyInspector = 'sunpath_inspector';
   static const String _keyStudies = 'sunpath_studies_v1';
-  static const String _keyFirstInstallDate = 'sunpath_first_install_date';
+  static const String _keyFreeSecondsUsed = 'sunpath_free_seconds_used';
+  static const String _keyTrialStartedAt = 'sunpath_7day_trial_started_at';
   static const String _keyIsPro = 'sunpath_is_pro_active';
+
+  static const int maxFreeUsageSeconds = 3 * 3600; // 3 horas gratis de uso activo
 
   SharedPreferences? _prefs;
   String _localeCode = 'es';
@@ -95,7 +98,8 @@ class StorageService extends ChangeNotifier {
   String _inspectorName = 'Ing. Solar / Evaluador Pro';
   List<SolarStudyRecord> _studies = [];
   bool _isPro = false;
-  DateTime? _firstInstallDate;
+  int _freeSecondsUsed = 0;
+  DateTime? _trialStartedAt;
 
   String get localeCode => _localeCode;
   AppStrings get strings => AppStrings.get(_localeCode);
@@ -104,20 +108,55 @@ class StorageService extends ChangeNotifier {
   String get inspectorName => _inspectorName;
   List<SolarStudyRecord> get studies => List.unmodifiable(_studies);
   bool get isPro => _isPro;
-  DateTime get firstInstallDate => _firstInstallDate ?? DateTime.now();
+  int get freeSecondsUsed => _freeSecondsUsed;
+  int get freeSecondsRemaining =>
+      (maxFreeUsageSeconds - _freeSecondsUsed).clamp(0, maxFreeUsageSeconds);
 
-  /// 7-day Free Trial status
-  int get trialDaysRemaining {
-    if (_isPro) return 999;
-    final start = _firstInstallDate ?? DateTime.now();
-    final elapsedDays = DateTime.now().difference(start).inDays;
-    final remaining = 7 - elapsedDays;
-    return remaining < 0 ? 0 : remaining;
+  String get formattedFreeTimeRemaining {
+    final rem = freeSecondsRemaining;
+    final hrs = rem ~/ 3600;
+    final mins = (rem % 3600) ~/ 60;
+    final secs = rem % 60;
+    if (hrs > 0) return '${hrs}h ${mins}m';
+    if (mins > 0) return '${mins}m ${secs}s';
+    return '${secs}s';
   }
 
-  bool get isTrialActive => !_isPro && trialDaysRemaining > 0;
-  bool get isTrialExpired => !_isPro && trialDaysRemaining <= 0;
-  bool get hasFullAccess => _isPro || isTrialActive;
+  /// Etapa 1: 3 horas de uso gratis con todo PRO
+  bool get isThreeHourFreeActive =>
+      !_isPro && _trialStartedAt == null && freeSecondsRemaining > 0;
+
+  /// Transición Etapa 1 -> Etapa 2: se acabaron las 3 horas y falta activar prueba de 7 días
+  bool get needsSevenDayTrialActivation =>
+      !_isPro && _trialStartedAt == null && freeSecondsRemaining <= 0;
+
+  bool get hasStartedSevenDayTrial => _trialStartedAt != null;
+
+  /// Días restantes del Free Trial de 7 días
+  int get trialDaysRemaining {
+    if (_isPro) return 999;
+    if (_trialStartedAt == null) return 7;
+    final elapsedDays = DateTime.now().difference(_trialStartedAt!).inDays;
+    final remaining = 7 - elapsedDays;
+    return remaining.clamp(0, 7);
+  }
+
+  /// Etapa 2: Prueba de 7 días activa
+  bool get isSevenDayTrialActive =>
+      !_isPro && _trialStartedAt != null && trialDaysRemaining > 0;
+
+  /// Etapa 3: Terminaron las 3 horas y los 7 días de prueba -> Solo pago
+  bool get isPaidOnlyStage =>
+      !_isPro && _trialStartedAt != null && trialDaysRemaining <= 0;
+
+  bool get isTrialActive =>
+      !_isPro && (isThreeHourFreeActive || isSevenDayTrialActive);
+
+  bool get isTrialExpired =>
+      !_isPro && (needsSevenDayTrialActivation || isPaidOnlyStage);
+
+  bool get hasFullAccess =>
+      _isPro || isThreeHourFreeActive || isSevenDayTrialActive;
 
   Future<void> init() async {
     _prefs = await SharedPreferences.getInstance();
@@ -127,13 +166,11 @@ class StorageService extends ChangeNotifier {
     _inspectorName =
         _prefs?.getString(_keyInspector) ?? 'Ing. Solar / Evaluador Pro';
     _isPro = _prefs?.getBool(_keyIsPro) ?? false;
-    final installMillis = _prefs?.getInt(_keyFirstInstallDate);
-    if (installMillis == null) {
-      _firstInstallDate = DateTime.now();
-      await _prefs?.setInt(_keyFirstInstallDate, _firstInstallDate!.millisecondsSinceEpoch);
-    } else {
-      _firstInstallDate = DateTime.fromMillisecondsSinceEpoch(installMillis);
-    }
+    _freeSecondsUsed = _prefs?.getInt(_keyFreeSecondsUsed) ?? 0;
+    final trialMillis = _prefs?.getInt(_keyTrialStartedAt);
+    _trialStartedAt = trialMillis != null
+        ? DateTime.fromMillisecondsSinceEpoch(trialMillis)
+        : null;
 
     final rawStudies = _prefs?.getString(_keyStudies);
     if (rawStudies != null && rawStudies.isNotEmpty) {
@@ -223,6 +260,67 @@ class StorageService extends ChangeNotifier {
   Future<void> setProStatus(bool pro) async {
     _isPro = pro;
     await _prefs?.setBool(_keyIsPro, pro);
+    notifyListeners();
+  }
+
+  Future<void> recordActiveUsageSeconds(int deltaSeconds) async {
+    if (!isThreeHourFreeActive || deltaSeconds <= 0) return;
+    final next = (_freeSecondsUsed + deltaSeconds).clamp(0, maxFreeUsageSeconds);
+    if (next == _freeSecondsUsed) return;
+    _freeSecondsUsed = next;
+    await _prefs?.setInt(_keyFreeSecondsUsed, _freeSecondsUsed);
+    notifyListeners();
+  }
+
+  Future<void> activateSevenDayFreeTrial() async {
+    _trialStartedAt = DateTime.now();
+    _freeSecondsUsed = maxFreeUsageSeconds;
+    await _prefs?.setInt(_keyFreeSecondsUsed, _freeSecondsUsed);
+    await _prefs?.setInt(
+      _keyTrialStartedAt,
+      _trialStartedAt!.millisecondsSinceEpoch,
+    );
+    notifyListeners();
+  }
+
+  /// Helper para pruebas locales de las 3 etapas desde Ajustes
+  Future<void> debugSetMonetizationStage(int stage) async {
+    switch (stage) {
+      case 0: // Etapa 1: 3 horas gratis completas
+        _isPro = false;
+        _freeSecondsUsed = 0;
+        _trialStartedAt = null;
+        await _prefs?.setBool(_keyIsPro, false);
+        await _prefs?.setInt(_keyFreeSecondsUsed, 0);
+        await _prefs?.remove(_keyTrialStartedAt);
+        break;
+      case 1: // Fin de las 3 horas -> exige activar Trial 7 días
+        _isPro = false;
+        _freeSecondsUsed = maxFreeUsageSeconds;
+        _trialStartedAt = null;
+        await _prefs?.setBool(_keyIsPro, false);
+        await _prefs?.setInt(_keyFreeSecondsUsed, maxFreeUsageSeconds);
+        await _prefs?.remove(_keyTrialStartedAt);
+        break;
+      case 2: // Etapa 2: Trial de 7 días activo
+        _isPro = false;
+        _freeSecondsUsed = maxFreeUsageSeconds;
+        _trialStartedAt = DateTime.now();
+        await _prefs?.setBool(_keyIsPro, false);
+        await _prefs?.setInt(_keyFreeSecondsUsed, maxFreeUsageSeconds);
+        await _prefs?.setInt(
+            _keyTrialStartedAt, _trialStartedAt!.millisecondsSinceEpoch);
+        break;
+      case 3: // Etapa 3: Trial vencido -> Solo Pago
+        _isPro = false;
+        _freeSecondsUsed = maxFreeUsageSeconds;
+        _trialStartedAt = DateTime.now().subtract(const Duration(days: 8));
+        await _prefs?.setBool(_keyIsPro, false);
+        await _prefs?.setInt(_keyFreeSecondsUsed, maxFreeUsageSeconds);
+        await _prefs?.setInt(
+            _keyTrialStartedAt, _trialStartedAt!.millisecondsSinceEpoch);
+        break;
+    }
     notifyListeners();
   }
 

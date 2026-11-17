@@ -1,7 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
+import 'package:share_plus/share_plus.dart';
 import 'package:signature/signature.dart';
 import '../calculators/solar_calculator.dart';
 import '../services/pdf_report_service.dart';
@@ -42,6 +44,10 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
   int _sunSecondsElapsed = 0;
   bool _isSunTimerRunning = false;
 
+  // Cronómetro de uso gratis (3 horas) y control de Paywall
+  Timer? _usageTimer;
+  bool _isGateOpen = false;
+
   // Escáner de Hogar & Obstáculos
   double? _frozenWindowAzimuth;
   double? _frozenObstacleAngle;
@@ -59,10 +65,35 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
     _latCtrl = TextEditingController(text: store.latitude.toStringAsFixed(4));
     _lonCtrl = TextEditingController(text: store.longitude.toStringAsFixed(4));
     _inspectorCtrl = TextEditingController(text: store.inspectorName);
+
+    _usageTimer = Timer.periodic(const Duration(seconds: 5), (_) async {
+      await store.recordActiveUsageSeconds(5);
+      if (mounted && !store.hasFullAccess && !_isGateOpen) {
+        _openMandatoryPaywallGate();
+      }
+    });
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && !store.hasFullAccess && !_isGateOpen) {
+        _openMandatoryPaywallGate();
+      }
+    });
+  }
+
+  Future<void> _openMandatoryPaywallGate() async {
+    if (_isGateOpen) return;
+    _isGateOpen = true;
+    await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (_) => const PaywallScreen(isMandatoryGate: true),
+      ),
+    );
+    _isGateOpen = false;
   }
 
   @override
   void dispose() {
+    _usageTimer?.cancel();
     _sunTimer?.cancel();
     if (SensorService.instance.isCameraActive) {
       SensorService.instance.stopCamera();
@@ -138,6 +169,78 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
     } else {
       setState(() => _cameraStatusNote = 'Modo radar AR activo (usa el HUD con tus sensores).');
     }
+  }
+
+  Future<void> _takePhoto() async {
+    final res = await SensorService.instance.capturePhoto();
+    if (!mounted) return;
+    if (res == null || res['status'] != 'ok') {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Abre la cámara en vivo primero para capturar la foto.'),
+          backgroundColor: Colors.redAccent,
+        ),
+      );
+      return;
+    }
+
+    final filePath = res['filePath'] as String?;
+    final savedGallery = (res['savedToGallery'] as bool?) ?? false;
+    if (filePath == null) return;
+
+    await showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.darkCard,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+        title: const Row(
+          children: [
+            Icon(Icons.photo_camera_rounded, color: AppTheme.primary),
+            SizedBox(width: 8),
+            Text('Foto Capturada', style: TextStyle(color: Colors.white, fontSize: 17)),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ClipRRect(
+              borderRadius: BorderRadius.circular(12),
+              child: SizedBox(
+                height: 260,
+                child: Image.file(File(filePath), fit: BoxFit.cover),
+              ),
+            ),
+            const SizedBox(height: 10),
+            Text(
+              savedGallery
+                  ? '✅ Guardada en la Galería (Pictures/SunPathAR)'
+                  : '✅ Foto lista para compartir',
+              style: const TextStyle(color: AppTheme.success, fontSize: 12, fontWeight: FontWeight.bold),
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cerrar', style: TextStyle(color: AppTheme.textMuted)),
+          ),
+          ElevatedButton.icon(
+            onPressed: () async {
+              await SharePlus.instance.share(
+                ShareParams(
+                  files: [XFile(filePath)],
+                  text: 'Foto solar capturada con SunPath AR Pro ☀️',
+                ),
+              );
+            },
+            icon: const Icon(Icons.share_rounded, color: Colors.black, size: 16),
+            label: const Text('Compartir', style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
+            style: ElevatedButton.styleFrom(backgroundColor: AppTheme.primary),
+          ),
+        ],
+      ),
+    );
   }
 
   void _toggleSunTimer() {
@@ -278,9 +381,13 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
                         const SizedBox(width: 8),
                         Expanded(
                           child: Text(
-                            store.isTrialExpired
-                                ? 'Prueba gratuita de 7 días finalizada • Toca para desbloquear PRO'
-                                : 'Prueba de 7 días activa: ${store.trialDaysRemaining} días restantes • Acceso Total',
+                            store.isThreeHourFreeActive
+                                ? '🎁 Uso PRO Gratis: ${store.formattedFreeTimeRemaining} restantes • Luego 7 días gratis'
+                                : store.needsSevenDayTrialActivation
+                                    ? '⏰ Fin de las 3h gratis • Activa tus 7 días de prueba gratis'
+                                    : store.isSevenDayTrialActive
+                                        ? '⏳ Prueba 7 días activa: ${store.trialDaysRemaining} días restantes'
+                                        : '🔒 Prueba finalizada • Desbloquea SunPath AR PRO',
                             style: TextStyle(
                               fontSize: 11,
                               fontWeight: FontWeight.w700,
@@ -295,7 +402,9 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
                             borderRadius: BorderRadius.circular(10),
                           ),
                           child: Text(
-                            store.isTrialExpired ? 'DESBLOQUEAR' : 'PRO',
+                            store.needsSevenDayTrialActivation
+                                ? '7 DÍAS GRATIS'
+                                : (store.isPaidOnlyStage ? 'DESBLOQUEAR' : 'PRO'),
                             style: const TextStyle(
                               fontSize: 10,
                               fontWeight: FontWeight.w900,
@@ -700,18 +809,25 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
                 ClipRRect(
                   borderRadius: BorderRadius.circular(14),
                   child: Container(
-                    height: 290,
+                    height: 310,
                     color: const Color(0xFF070B14),
                     child: Stack(
                       fit: StackFit.expand,
                       children: [
                         if (sensor.isCameraActive && sensor.cameraTextureId != null)
-                          Center(
-                            child: Transform.scale(
-                              scaleX: sensor.isFrontCamera ? -1.0 : 1.0,
-                              child: RotatedBox(
-                                quarterTurns: ((sensor.sensorOrientation ~/ 90) + sensor.extraQuarterTurns) % 4,
-                                child: Texture(textureId: sensor.cameraTextureId!),
+                          ClipRect(
+                            child: OverflowBox(
+                              alignment: Alignment.center,
+                              child: FittedBox(
+                                fit: BoxFit.cover,
+                                child: SizedBox(
+                                  width: 720,
+                                  height: 960,
+                                  child: RotatedBox(
+                                    quarterTurns: sensor.extraQuarterTurns,
+                                    child: Texture(textureId: sensor.cameraTextureId!),
+                                  ),
+                                ),
                               ),
                             ),
                           )
@@ -796,7 +912,7 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
 
                         // Indicador Inferior de Lente Activa
                         Positioned(
-                          bottom: 10,
+                          bottom: 12,
                           left: 10,
                           child: Container(
                             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
@@ -810,6 +926,39 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
                             ),
                           ),
                         ),
+
+                        // Botón Obturador Circular dentro del visor cuando la cámara está activa
+                        if (sensor.isCameraActive)
+                          Positioned(
+                            bottom: 12,
+                            right: 14,
+                            child: GestureDetector(
+                              onTap: _takePhoto,
+                              child: Container(
+                                width: 56,
+                                height: 56,
+                                decoration: BoxDecoration(
+                                  shape: BoxShape.circle,
+                                  color: Colors.white.withValues(alpha: 0.92),
+                                  border: Border.all(
+                                    color: alignment.isAligned ? AppTheme.success : AppTheme.primary,
+                                    width: 4,
+                                  ),
+                                  boxShadow: [
+                                    BoxShadow(
+                                      color: Colors.black.withValues(alpha: 0.5),
+                                      blurRadius: 10,
+                                    ),
+                                  ],
+                                ),
+                                child: const Icon(
+                                  Icons.camera_alt_rounded,
+                                  color: Colors.black,
+                                  size: 26,
+                                ),
+                              ),
+                            ),
+                          ),
                       ],
                     ),
                   ),
@@ -822,18 +971,18 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
                     Expanded(
                       flex: 2,
                       child: ElevatedButton.icon(
-                        onPressed: () => _toggleCamera(),
+                        onPressed: sensor.isCameraActive ? _takePhoto : () => _toggleCamera(),
                         icon: Icon(
-                          sensor.isCameraActive ? Icons.videocam_off_rounded : Icons.camera_alt_rounded,
+                          sensor.isCameraActive ? Icons.photo_camera_rounded : Icons.camera_alt_rounded,
                           color: Colors.black,
                           size: 18,
                         ),
                         label: Text(
-                          sensor.isCameraActive ? 'Cerrar Cámara' : 'Abrir Cámara en Vivo',
+                          sensor.isCameraActive ? '📸 Tomar Foto' : 'Abrir Cámara en Vivo',
                           style: const TextStyle(color: Colors.black, fontWeight: FontWeight.w900, fontSize: 12),
                         ),
                         style: ElevatedButton.styleFrom(
-                          backgroundColor: sensor.isCameraActive ? Colors.amber : AppTheme.primary,
+                          backgroundColor: sensor.isCameraActive ? AppTheme.success : AppTheme.primary,
                           padding: const EdgeInsets.symmetric(vertical: 12),
                         ),
                       ),
@@ -854,11 +1003,16 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
                       ),
                     ),
                     if (sensor.isCameraActive) ...[
-                      const SizedBox(width: 6),
+                      const SizedBox(width: 4),
                       IconButton(
-                        tooltip: 'Girar imagen cámara',
+                        tooltip: 'Girar cámara 90°',
                         onPressed: () => sensor.rotateCameraPreview(),
                         icon: const Icon(Icons.rotate_right_rounded, color: AppTheme.primary),
+                      ),
+                      IconButton(
+                        tooltip: 'Apagar cámara',
+                        onPressed: () => _toggleCamera(),
+                        icon: const Icon(Icons.videocam_off_rounded, color: Colors.redAccent),
                       ),
                     ],
                   ],
@@ -1498,16 +1652,20 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
                         Text(
                           store.isPro
                               ? 'SunPath AR PRO — Desbloqueado'
-                              : (store.isTrialActive
-                                  ? 'Prueba Gratuita (${store.trialDaysRemaining} días restantes)'
-                                  : 'Actualizar a SunPath AR PRO'),
+                              : store.isThreeHourFreeActive
+                                  ? 'Acceso Gratis PRO (${store.formattedFreeTimeRemaining} restantes)'
+                                  : store.needsSevenDayTrialActivation
+                                      ? '3h Gratis Finalizadas — Activa 7 Días Gratis'
+                                      : store.isSevenDayTrialActive
+                                          ? 'Prueba Gratuita (${store.trialDaysRemaining} días restantes)'
+                                          : 'Prueba Finalizada — Desbloquea PRO',
                           style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: Colors.white),
                         ),
                         const SizedBox(height: 2),
                         Text(
                           store.isPro
                               ? 'Licencia PRO activa • Acceso ilimitado'
-                              : 'Toca aquí para ver planes y prueba de 7 días',
+                              : '3h gratis ➔ 7 días Free Trial ➔ Plan PRO',
                           style: TextStyle(fontSize: 12, color: store.isPro ? Colors.white70 : AppTheme.textSecondary),
                         ),
                       ],
@@ -1590,6 +1748,37 @@ class _HomeNavigationScreenState extends State<HomeNavigationScreen> {
                 },
               );
             }).toList(),
+          ),
+          const SizedBox(height: 20),
+          const Text('🧪 PROBAR ETAPAS DE MONETIZACIÓN (TEST)', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: AppTheme.textSecondary)),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              ActionChip(
+                label: const Text('1. 3h Gratis', style: TextStyle(fontSize: 11)),
+                onPressed: () => store.debugSetMonetizationStage(0),
+              ),
+              ActionChip(
+                label: const Text('2. Fin 3h (Pedir Trial 7d)', style: TextStyle(fontSize: 11)),
+                onPressed: () async {
+                  await store.debugSetMonetizationStage(1);
+                  if (mounted) _openMandatoryPaywallGate();
+                },
+              ),
+              ActionChip(
+                label: const Text('3. Trial 7d Activo', style: TextStyle(fontSize: 11)),
+                onPressed: () => store.debugSetMonetizationStage(2),
+              ),
+              ActionChip(
+                label: const Text('4. Fin 7d (Solo Pago)', style: TextStyle(fontSize: 11)),
+                onPressed: () async {
+                  await store.debugSetMonetizationStage(3);
+                  if (mounted) _openMandatoryPaywallGate();
+                },
+              ),
+            ],
           ),
         ],
       ),

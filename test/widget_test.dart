@@ -57,6 +57,42 @@ void main() {
     expect(frontCamAlign.isAligned, isTrue);
   });
 
+  test('Monetization 3-stage funnel transitions properly (3h free -> 7d trial -> paid only)', () async {
+    SharedPreferences.setMockInitialValues({});
+    await StorageService.instance.init();
+    final store = StorageService.instance;
+
+    // Etapa 1: 3 horas gratis activas al iniciar
+    await store.debugSetMonetizationStage(0);
+    expect(store.isThreeHourFreeActive, isTrue);
+    expect(store.needsSevenDayTrialActivation, isFalse);
+    expect(store.hasFullAccess, isTrue);
+    expect(store.freeSecondsRemaining, 3 * 3600);
+
+    // Consumir 3 horas de uso
+    await store.recordActiveUsageSeconds(3 * 3600);
+    expect(store.freeSecondsRemaining, 0);
+    expect(store.isThreeHourFreeActive, isFalse);
+    expect(store.needsSevenDayTrialActivation, isTrue);
+    expect(store.hasFullAccess, isFalse);
+
+    // Etapa 2: Activar prueba gratuita de 7 días
+    await store.activateSevenDayFreeTrial();
+    expect(store.needsSevenDayTrialActivation, isFalse);
+    expect(store.isSevenDayTrialActive, isTrue);
+    expect(store.trialDaysRemaining, 7);
+    expect(store.hasFullAccess, isTrue);
+
+    // Etapa 3: Vencimiento tras los 7 días -> Solo Pago
+    await store.debugSetMonetizationStage(3);
+    expect(store.isSevenDayTrialActive, isFalse);
+    expect(store.isPaidOnlyStage, isTrue);
+    expect(store.hasFullAccess, isFalse);
+
+    // Reiniciar a Etapa 1 limpio para los widget tests siguientes
+    await store.debugSetMonetizationStage(0);
+  });
+
   testWidgets('WelcomeLandingScreen navigates to HomeNavigationScreen',
       (WidgetTester tester) async {
     SharedPreferences.setMockInitialValues({});
